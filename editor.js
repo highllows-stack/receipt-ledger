@@ -124,7 +124,7 @@ function editNewRow(item={}){
   <label>状態<select class="e-state">${editOptions(['','冷凍','冷蔵','常温'],item.state||'')}</select></label>
 </div><div class="account-panel"><header><h4>何月分として計上するか</h4><span class="muted">月別の配分</span></header>
 <p class="account-help">購入日とは別に設定できます。分量配分する場合は、容量・重量と単位を入力してください（例：米5kg）。月別の配分量を入力して「数量比で金額を配分」を押します。</p>
-<div class="account-list"></div><div class="account-actions"><button type="button" class="secondary a-add">＋月を追加</button><button type="button" class="secondary a-calculate">数量比で金額を自動配分</button></div>
+<div class="account-list"></div><div class="account-actions"><button type="button" class="secondary a-add">＋月を追加</button><button type="button" class="secondary a-calculate">数量比で金額を自動配分</button><button type="button" class="secondary a-predict">過去の配分から提案</button></div>
 <div class="account-summary"></div></div>`;
   const cat=wrap.querySelector('.e-category'),sub=wrap.querySelector('.e-subcategory');
   function updateSub(selected){sub.innerHTML=editOptions(GROUPS[cat.value],selected||GROUPS[cat.value][0]);}
@@ -149,6 +149,15 @@ function editNewRow(item={}){
     planList.lastElementChild.querySelector('.a-month').focus();
   });
   wrap.querySelector('.a-calculate').addEventListener('click',()=>editAllocateByQuantity(wrap));
+  wrap.querySelector('.a-predict').addEventListener('click',()=>{
+    let item;try{item=editRowData(wrap,true)}catch(e){return editStatus(e.message)}
+    const date=editGet('editDate').value;
+    const plan=window.learningPredictAllocations?.(item,date,currentEditPurchase?.id);
+    if(!plan)return editStatus('同じ商品の配分履歴が2件以上ありません。参考予測はまだできません。');
+    if(!confirm('過去'+plan.samples+'件の配分から予測した計上月に置き換えます。保存前に内容を確認してください。'))return;
+    editSetAllocations(wrap,plan.monthPlans);
+    editStatus('過去の配分に基づく提案を反映しました。必ず内容を確認して保存してください。');
+  });
   wrap.querySelector('.e-amount').addEventListener('input',()=>{
     if(planList.children.length===1&&wrap.dataset.autoSingleAmount==='yes'){
       planList.firstElementChild.querySelector('.a-amount').value=wrap.querySelector('.e-amount').value;
@@ -217,6 +226,7 @@ window.openPurchaseEditor=function(pid,focusId){
   editGet('editDate').value=p.date||today();
   editGet('editReceiptTotal').value=p.receiptTotal??'';
   editGet('editReview').value=p.reviewStatus==='needs_review'?'needs_review':'ok';
+  editGet('editLearnChanges').checked=true;
   editGet('editItems').innerHTML='';
   for(const i of p.items){editGet('editItems').append(editNewRow(i));}
   editStatus('商品を編集・追加・分割できます。変更は「変更を保存」を押すまで反映されません。');
@@ -256,6 +266,7 @@ async function editSave(){
       if(at<0)throw Error('編集対象が見つかりません');
       state.purchases[at]=edited;persist();refresh();
     }
+    if(window.learningRememberEdit)await window.learningRememberEdit(prior,edited,editGet('editLearnChanges').checked);
     editGet('purchaseEditor').close();currentEditPurchase=null;toast('購入明細を保存しました。');
   }catch(e){editStatus('保存できませんでした：'+e.message+'。履歴を再取得して状態を確認してください。');}
   finally{purchaseEditorBusy=false;editGet('editSave').disabled=false;}

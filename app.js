@@ -3,7 +3,7 @@ const KEY='receipt-ledger-data-v1';
 const GROUPS={'食材':['肉類','魚介類','野菜','果物','米・麺類','卵・乳製品','豆製品','その他'],'調味料':['基本調味料','油・ドレッシング','香辛料','その他'],'食品・飲料':['惣菜・弁当','冷凍食品','インスタント食品','菓子','飲料','その他'],'日用品':['洗剤','掃除用品','衛生用品','キッチン用品','消耗品','その他'],'家具・家電':['家具','家電','PC・周辺機器','インテリア','その他'],'衣類・美容':['衣類','スキンケア','ヘアケア','理美容用品','その他'],'その他':['趣味','医薬品','雑貨','未分類']};
 const DEFAULT={schemaVersion:1,books:[{id:'personal',name:'個人用',kind:'personal'},{id:'shared',name:'共有用（この端末内）',kind:'shared'}],activeBook:'personal',purchases:[],aliases:{}};
 const $=id=>document.getElementById(id);const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));const yen=n=>'¥'+Number(n||0).toLocaleString('ja-JP');const uid=()=>crypto.randomUUID?.()||Date.now().toString(36)+Math.random().toString(36).slice(2);const today=()=>new Date().toLocaleDateString('sv-SE');
-let state;try{state=JSON.parse(localStorage.getItem(KEY))||structuredClone(DEFAULT)}catch{state=structuredClone(DEFAULT)}if(!Array.isArray(state.books)||!Array.isArray(state.purchases))state=structuredClone(DEFAULT);state.aliases||={};let pendingImages=[];
+let state;try{state=JSON.parse(localStorage.getItem(KEY))||structuredClone(DEFAULT)}catch{state=structuredClone(DEFAULT)}if(!Array.isArray(state.books)||!Array.isArray(state.purchases))state=structuredClone(DEFAULT);state.aliases||={};state.learnedRules||=[];let pendingImages=[];
 function persist(){if(window.cloudMode)return;try{localStorage.setItem(KEY,JSON.stringify(state))}catch{alert('保存容量が不足しています。JSONバックアップを保存してください。');throw Error('storage full')}}
 function toast(msg){$('toast').textContent=msg;$('toast').style.display='block';clearTimeout(toast.timer);toast.timer=setTimeout(()=>$('toast').style.display='none',3500)}
 function active(){return state.purchases.filter(p=>p.bookId===state.activeBook)}
@@ -67,6 +67,9 @@ function installDatePickerWholeField(){
 const DASHBOARD_CHART_KEY='receipt-ledger-chart-view-v07';
 const DASHBOARD_PIE_LEVEL_KEY='receipt-ledger-pie-level-v07';
 let dashboardChartView='bar';
+const FOOD_MAJORS=['食材','調味料','食品・飲料'];
+let foodDrillSub=null;
+let foodSlices=[];
 const DASHBOARD_PIE_COLORS=['#23836c','#db8e40','#6188bd','#b96f92','#8375b5','#6c9b42','#d26e5e','#4f91a2','#b2a03c','#956c56','#537e5a','#a36da4'];
 function categoryColor(index){return DASHBOARD_PIE_COLORS[index%DASHBOARD_PIE_COLORS.length]}
 function chartPrefsRead(){
@@ -89,6 +92,85 @@ function setChartView(view){
   dashboardChartView=view==='pie'?'pie':'bar';
   try{localStorage.setItem(DASHBOARD_CHART_KEY,dashboardChartView)}catch{}
   chartButtonsUpdate();renderDashboard();
+}
+// The dedicated food chart always follows the currently selected accounting/purchase month.
+// These choices are presentation only: no changes to purchase records or cloud data.
+function showFoodMajor(major){
+  if(!FOOD_MAJORS.includes(major))return;
+  $('foodScope').value=major;
+  foodDrillSub=null;
+  renderDashboard();
+  $('foodBreakdownCard').scrollIntoView({behavior:'smooth',block:'start'});
+  $('foodBreakdownCard').focus({preventScroll:true});
+}
+function pieSegmentAtClick(ev,slices){
+  if(!slices.length)return null;
+  const box=ev.currentTarget.getBoundingClientRect();
+  const x=ev.clientX-box.left-box.width/2,y=ev.clientY-box.top-box.height/2;
+  if(x*x+y*y>Math.pow(Math.min(box.width,box.height)/2,2))return null;
+  // CSS conic-gradient(from -90deg) starts at the left edge.
+  const fraction=((Math.atan2(y,x)*180/Math.PI+180+360)%360)/360;
+  return slices.find(s=>fraction>=s.from/100-1e-8&&fraction<s.to/100+1e-8)||slices[slices.length-1];
+}
+function foodScopeRows(rows){
+  const scope=$('foodScope').value;
+  return rows.filter(r=>FOOD_MAJORS.includes(r.item.category)&&(scope==='all'||r.item.category===scope));
+}
+function renderFoodPie(rows,month,mode){
+  const scope=$('foodScope').value;
+  const foodRows=foodScopeRows(rows);
+  const total=foodRows.reduce((sum,r)=>sum+amountCents(r.amount),0);
+  const root=$('foodPieContent');
+  $('foodMonth').textContent=month.replace('-','年')+'月';
+  $('foodTotal').textContent=yen(centsAmount(total));
+  const crumb=$('foodCrumb');
+  if(foodDrillSub){
+    crumb.hidden=false;
+    $('foodBack').textContent='← 小分類一覧に戻る';
+    $('foodCurrent').textContent=foodDrillSub.replace(' / ',' ＞ ');
+  }else{crumb.hidden=true;}
+  if(total<=0){foodDrillSub=null;crumb.hidden=true;$('foodItemBreakdown').hidden=true;$('foodItemBreakdown').innerHTML='';root.innerHTML='<div class="empty">対象月の食費はまだありません。食品を登録すると、ここに内訳が表示されます。</div>';return;}
+  const scopedRows=foodDrillSub?foodRows.filter(r=>(r.item.category||'その他')+' / '+(r.item.subcategory||'未分類')===foodDrillSub):foodRows;
+  if(!scopedRows.length){foodDrillSub=null;return renderFoodPie(rows,month,mode);}
+  const sums=new Map();
+  for(const r of scopedRows){
+    const label=foodDrillSub?(r.item.canonical||r.item.name):((r.item.category||'その他')+' / '+(r.item.subcategory||'未分類'));
+    sums.set(label,(sums.get(label)||0)+amountCents(r.amount));
+  }
+  const entries=[...sums].filter(([,v])=>v>0).sort((a,b)=>b[1]-a[1]);
+  const shownTotal=entries.reduce((sum,[,val])=>sum+val,0);
+  if(!shownTotal){root.innerHTML='<div class="empty">グラフに表示できる支出がありません。</div>';return;}
+  let acc=0;
+  const slices=entries.map(([name,value],index)=>{
+    const from=acc/shownTotal*100;acc+=value;
+    return {name,value,from,to:acc/shownTotal*100,percent:value/shownTotal*100,color:categoryColor(index)};
+  });
+  foodSlices=slices;
+  const gradient=slices.map(s=>`${s.color} ${s.from.toFixed(8)}% ${s.to.toFixed(8)}%`).join(',');
+  const current=foodDrillSub?foodDrillSub.replace(' / ',' ＞ '):'食費の小分類';
+  const label=`${month.replace('-','年')}月の${current}。${slices.map(s=>s.name+' '+s.percent.toFixed(1)+'%').join('、')}`;
+  const legend=slices.map((s,i)=>{
+    const content=`<span class="pie-swatch" style="background:${s.color}" aria-hidden="true"></span><span class="pie-name">${esc(s.name.replace(' / ',' ＞ '))}</span><span class="pie-amount">${yen(centsAmount(s.value))}</span><strong class="pie-percent">${s.percent.toFixed(1)}%</strong>`;
+    return foodDrillSub?`<div class="pie-legend-row">${content}</div>`:
+      `<button type="button" class="pie-legend-row food-pie-choice" data-food-index="${i}" aria-label="${esc(s.name.replace(' / ',' ＞ '))}の商品の内訳を見る">${content}<span class="food-next" aria-hidden="true">›</span></button>`;
+  }).join('');
+  root.innerHTML=`<div class="pie-chart food-clickable-pie" style="background:conic-gradient(from -90deg,${gradient})" role="img" aria-label="${esc(label)}" title="凡例の分類名を押すと商品別の内訳を表示します"></div><div class="pie-legend"><p class="pie-sum">${foodDrillSub?'この小分類の合計':'食費の合計'} <strong>${yen(centsAmount(shownTotal))}</strong></p>${legend}</div>`;
+  root.querySelectorAll('[data-food-index]').forEach(b=>b.onclick=()=>{
+    const idx=Number(b.dataset.foodIndex);
+    if(!foodDrillSub&&slices[idx]){foodDrillSub=slices[idx].name;renderFoodPie(rows,month,mode)}
+  });
+  if(!foodDrillSub){
+    const wheel=root.querySelector('.food-clickable-pie');
+    wheel.classList.add('interactive-pie');
+    wheel.addEventListener('click',e=>{const slice=pieSegmentAtClick(e,slices);if(slice){foodDrillSub=slice.name;renderFoodPie(rows,month,mode)}});
+  }
+  const list=$('foodItemBreakdown');
+  if(foodDrillSub){
+    const lines=scopedRows.slice().sort((a,b)=>b.amount-a.amount).map(r=>
+      `<div class="allocated-line"><div><strong>${esc(r.item.name)}</strong><small>${esc(r.purchase.merchant)} · 購入日 ${esc(r.purchase.date)}${r.quantity!=null?' · 配分数量 '+esc(r.quantity)+' '+esc(r.item.unit||'個'):''}</small></div><strong>${yen(r.amount)}</strong></div>`).join('');
+    list.hidden=false;
+    list.innerHTML=`<h4>該当する購入明細</h4>${lines}`;
+  }else{list.hidden=true;list.innerHTML='';}
 }
 function pieDataForRows(rows,level){
   const sums=new Map();
@@ -113,8 +195,19 @@ function renderCategoryPie(rows,month,mode){
   // Two equal-angle stops with the same color produce a crisp pie wedge.
   const gradient=slices.map(s=>`${s.color} ${s.from.toFixed(8)}% ${s.to.toFixed(8)}%`).join(',');
   const label=`${month.replace('-','年')}月・${mode==='accounted'?'計上月':'購入月'}：${slices.map(s=>s.label+' '+s.percent.toFixed(1)+'%').join('、')}`;
-  const legend=slices.map(s=>`<div class="pie-legend-row"><span class="pie-swatch" style="background:${s.color}" aria-hidden="true"></span><span class="pie-name">${esc(s.label)}</span><span class="pie-amount">${yen(centsAmount(s.value))}</span><strong class="pie-percent">${s.percent.toFixed(1)}%</strong></div>`).join('');
+  const legend=slices.map(s=>{
+    const body=`<span class="pie-swatch" style="background:${s.color}" aria-hidden="true"></span><span class="pie-name">${esc(s.label)}</span><span class="pie-amount">${yen(centsAmount(s.value))}</span><strong class="pie-percent">${s.percent.toFixed(1)}%</strong>`;
+    const major=level==='minor'?s.label.split(' / ')[0]:s.label;
+    return FOOD_MAJORS.includes(major)?`<button type="button" class="pie-legend-row pie-legend-link" data-food-major="${esc(major)}" title="食費の内訳を表示">${body}<span class="food-next" aria-hidden="true">›</span></button>`:`<div class="pie-legend-row">${body}</div>`;
+  }).join('');
   $('categoryPieContent').innerHTML=`<div class="pie-chart" style="background:conic-gradient(from -90deg,${gradient})" role="img" aria-label="${esc(label)}"></div><div class="pie-legend"><p class="pie-sum">支出合計 <strong>${yen(centsAmount(total))}</strong></p>${legend}</div>`;
+  $('categoryPieContent').querySelectorAll('[data-food-major]').forEach(b=>b.onclick=()=>showFoodMajor(b.dataset.foodMajor));
+  if(level==='major'){
+    const segments=$('categoryPieContent').querySelector('.pie-chart');
+    segments.classList.add('interactive-pie');
+    segments.title='食材・調味料・食品・飲料の扇形を押すと、食費の内訳へ移動します';
+    segments.addEventListener('click',e=>{const picked=pieSegmentAtClick(e,slices.map(s=>({...s,name:s.label})));if(picked)showFoodMajor(picked.label)});
+  }
 }
 function renderDashboard(){
   const month=$('month').value,mode=$('accountingMode').value;
@@ -127,8 +220,10 @@ function renderDashboard(){
     '「購入月」で集計中。支払った月に、各商品の購入金額をまとめて表示します。';
   const sums={};for(const r of rows)sums[r.item.category]=(sums[r.item.category]||0)+amountCents(r.amount);
   const max=Math.max(1,...Object.values(sums));
-  $('categoryBars').innerHTML=Object.entries(sums).sort((a,b)=>b[1]-a[1]).map(([k,v])=>`<div class="bar"><div class="bar-head"><span>${esc(k)}</span><strong>${yen(centsAmount(v))}</strong></div><div class="track"><div class="fill" style="width:${v/max*100}%"></div></div></div>`).join('')||'<div class="empty">この月の計上履歴はありません。</div>';
+  $('categoryBars').innerHTML=Object.entries(sums).sort((a,b)=>b[1]-a[1]).map(([k,v])=>`<div class="bar"><div class="bar-head">${FOOD_MAJORS.includes(k)?`<button type="button" class="bar-food-link" data-food-major="${esc(k)}" title="食費の内訳を見る">${esc(k)} <span aria-hidden="true">›</span></button>`:`<span>${esc(k)}</span>`}<strong>${yen(centsAmount(v))}</strong></div><div class="track"><div class="fill" style="width:${v/max*100}%"></div></div></div>`).join('')||'<div class="empty">この月の計上履歴はありません。</div>';
+  $('categoryBars').querySelectorAll('[data-food-major]').forEach(b=>b.onclick=()=>showFoodMajor(b.dataset.foodMajor));
   renderCategoryPie(rows,month,mode);
+  renderFoodPie(rows,month,mode);
   const cats=new Map();
   for(const r of rows){const category=r.item.category||'その他',sub=r.item.subcategory||'未分類';
     if(!cats.has(category))cats.set(category,new Map());
@@ -154,9 +249,9 @@ function editItem(pid,iid){if(typeof window.openPurchaseEditor==='function')wind
 function unitPrice(i){if(i.size&&i.size>0){const units={g:['g',1,100],kg:['g',1000,100],ml:['ml',1,100],L:['ml',1000,100]};const u=units[i.unit];if(u)return{value:i.amount/(i.size*u[1]*i.qty)*u[2],unit:'100'+u[0]}}if(i.unit==='個'&&i.size&&i.size>0)return{value:i.amount/(i.size*i.qty),unit:'1個'};if(i.qty>0)return{value:i.amount/i.qty,unit:'1購入単位'};return null}
 function renderCompare(){const q=$('compareSearch').value.trim().toLowerCase(),period=$('period').value,origin=$('originFilter').value.trim(),status=$('stateFilter').value;const now=new Date();const start=period==='all'?null:period==='custom'?$('fromDate').value:new Date(now.getTime()-Number(period)*86400000).toISOString().slice(0,10);const end=period==='custom'?$('toDate').value:today();const rows=active().flatMap(p=>p.items.map(i=>({...i,merchant:p.merchant,date:p.date}))).filter(i=>(!q||i.canonical.toLowerCase().includes(q))&&(!start||i.date>=start)&&i.date<=end&&(!origin||i.origin.includes(origin))&&(!status||i.state===status));const grouped={};rows.forEach(i=>(grouped[i.canonical]??=[]).push(i));const html=Object.entries(grouped).sort((a,b)=>a[0].localeCompare(b[0],'ja')).map(([name,items])=>{const prices=items.map(i=>({...i,price:unitPrice(i)}));const byUnit={};prices.forEach(i=>{if(i.price)(byUnit[i.price.unit]??=[]).push(i)});return `<article><h3>${esc(name)} <span class="tag">${items.length}件</span></h3>${Object.entries(byUnit).map(([unit,rs])=>`<div class="compare-summary"><article><small>${esc(unit)}あたり最安</small><strong>${yen(Math.round(Math.min(...rs.map(r=>r.price.value))*100)/100)}</strong></article><article><small>${esc(unit)}あたり平均</small><strong>${yen(Math.round(rs.reduce((s,r)=>s+r.price.value,0)/rs.length*100)/100)}</strong></article></div>`).join('')}<div class="table-scroll"><table><thead><tr><th>購入日</th><th>購入先</th><th>産地・状態</th><th>購入金額</th><th>換算単価</th></tr></thead><tbody>${prices.map(i=>`<tr><td>${esc(i.date)}</td><td>${esc(i.merchant)}</td><td>${esc(i.origin||'不明')}・${esc(i.state||'不明')}</td><td>${yen(i.amount)}</td><td>${i.price?yen(Math.round(i.price.value*100)/100)+' / '+esc(i.price.unit):'算出不可'}</td></tr>`).join('')}</tbody></table></div><small class="muted">「1購入単位」は重量・容量が不明な場合の参考値です。100g単価とは比較しません。</small></article>`}).join('');$('comparison').innerHTML=html||'<div class="empty">該当する購入履歴がありません。</div>'}
 function renderAliases(){$('aliasList').innerHTML=Object.entries(state.aliases).map(([k,v])=>`<div class="line"><span>${esc(k)} → ${esc(v)}</span><button class="secondary" data-alias="${encodeURIComponent(k)}">削除</button></div>`).join('')||'<p class="muted">登録済みルールはありません。</p>';$('aliasList').querySelectorAll('[data-alias]').forEach(b=>b.onclick=()=>{delete state.aliases[decodeURIComponent(b.dataset.alias)];persist();renderAliases()})}
-function refresh(){bookOptions();renderDashboard();renderHistory();renderCompare();renderAliases()}
+function refresh(){bookOptions();renderDashboard();renderHistory();renderCompare();renderAliases();window.learningRefreshPredictions?.()}
 function download(filename,content,mime){const blob=new Blob([content],{type:mime});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download=filename;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000)}
 function csvCell(v){return '"'+String(v??'').replaceAll('"','""')+'"'}
 function handleImages(files){pendingImages.push(...Array.from(files));if(window.receiptQueueChanged)window.receiptQueueChanged();else $('imageQueue').textContent=pendingImages.length+'枚選択しました。'}
-function init(){installDatePickerWholeField();chartPrefsRead();$('chartBarButton').onclick=()=>setChartView('bar');$('chartPieButton').onclick=()=>setChartView('pie');$('pieCategoryLevel').onchange=()=>{try{localStorage.setItem(DASHBOARD_PIE_LEVEL_KEY,$('pieCategoryLevel').value)}catch{}renderDashboard()};if('serviceWorker'in navigator&&location.protocol!=='file:')navigator.serviceWorker.register('./sw.js').catch(()=>{});$('month').value=today().slice(0,7);$('purchaseDate').value=today();addRow();refresh();document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{document.querySelectorAll('nav button').forEach(x=>x.classList.toggle('active',x===b));document.querySelectorAll('.tab').forEach(x=>x.classList.toggle('active',x.id===b.dataset.tab));refresh()});$('book').onchange=e=>{if(window.cloudMode){e.target.value=state.activeBook;return;}state.activeBook=e.target.value;persist();refresh()};$('addBook').onclick=()=>{if(window.cloudMode)return toast('共有家計簿の作成は今後対応します');const name=prompt('新しい家計簿名（この端末内での切り替え）');if(!name?.trim())return;const id=uid();state.books.push({id,name:name.trim(),kind:'shared'});state.activeBook=id;persist();refresh()};$('month').onchange=renderDashboard;$('accountingMode').onchange=renderDashboard;$('purchaseDate').addEventListener('change',()=>{document.querySelectorAll('.item-row .account-month').forEach(el=>{if(el.dataset.changed!=='yes')el.value=$('purchaseDate').value.slice(0,7)})});document.addEventListener('change',e=>{if(e.target?.matches('.item-row .account-month'))e.target.dataset.changed='yes'});$('addItem').onclick=()=>addRow();$('savePurchase').onclick=savePurchase;$('historySearch').oninput=renderHistory;$('historyMode').onchange=renderHistory;['compareSearch','period','fromDate','toDate','originFilter','stateFilter'].forEach(id=>$(id).addEventListener('input',()=>{const custom=$('period').value==='custom';$('fromDate').hidden=!custom;$('toDate').hidden=!custom;renderCompare()}));$('camera').onchange=e=>handleImages(e.target.files);$('images').onchange=e=>handleImages(e.target.files);$('exportJson').onclick=()=>download('receipt-backup-'+today()+'.json',JSON.stringify(state,null,2),'application/json');$('exportCsv').onclick=()=>{const cols=['家計簿','購入日','店舗','商品名','統一商品名','商品全額','計上月','月別計上金額','月別配分数量','数量単位','購入数量','容量','大分類','小分類','産地','状態'];const lines=[cols,...state.purchases.flatMap(p=>p.items.flatMap(i=>accountingAllocations(p,i).map(a=>[state.books.find(b=>b.id===p.bookId)?.name,p.date,p.merchant,i.name,i.canonical,i.amount,a.month,a.amount,a.quantity,i.unit,i.qty,i.size,i.category,i.subcategory,i.origin,i.state])))];download('receipt-allocations-'+today()+'.csv','\ufeff'+lines.map(r=>r.map(csvCell).join(',')).join('\r\n'),'text/csv;charset=utf-8')};$('importJson').onchange=async e=>{if(window.cloudMode){toast('ログアウト後に端末内バックアップを復元してください');e.target.value='';return;}const file=e.target.files?.[0];if(!file)return;try{const incoming=JSON.parse(await file.text());if(incoming.schemaVersion!==1||!Array.isArray(incoming.books)||!Array.isArray(incoming.purchases)||!incoming.books.every(b=>typeof b.id==='string')||!incoming.purchases.every(p=>Array.isArray(p.items)))throw Error('対応していないバックアップ形式です');if(!confirm('現在の端末内データをバックアップ内容で置き換えます。続行しますか？'))return;state=incoming;persist();refresh();toast('バックアップを復元しました')}catch(err){toast(err.message)}finally{e.target.value=''}};$('addAlias').onclick=()=>{const k=$('aliasRaw').value.trim(),v=$('aliasCanonical').value.trim();if(!k||!v)return toast('両方の商品名を入力してください');state.aliases[k]=v;persist();$('aliasRaw').value='';$('aliasCanonical').value='';renderAliases();toast('統一ルールを追加しました（既存履歴は変更しません）')}}
+function init(){installDatePickerWholeField();chartPrefsRead();$('foodScope').onchange=()=>{foodDrillSub=null;renderDashboard()};$('foodBack').onclick=()=>{foodDrillSub=null;renderDashboard()};$('chartBarButton').onclick=()=>setChartView('bar');$('chartPieButton').onclick=()=>setChartView('pie');$('pieCategoryLevel').onchange=()=>{try{localStorage.setItem(DASHBOARD_PIE_LEVEL_KEY,$('pieCategoryLevel').value)}catch{}renderDashboard()};if('serviceWorker'in navigator&&location.protocol!=='file:')navigator.serviceWorker.register('./sw.js').catch(()=>{});$('month').value=today().slice(0,7);$('purchaseDate').value=today();addRow();refresh();document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{document.querySelectorAll('nav button').forEach(x=>x.classList.toggle('active',x===b));document.querySelectorAll('.tab').forEach(x=>x.classList.toggle('active',x.id===b.dataset.tab));refresh()});$('book').onchange=e=>{if(window.cloudMode){e.target.value=state.activeBook;return;}state.activeBook=e.target.value;persist();refresh()};$('addBook').onclick=()=>{if(window.cloudMode)return toast('共有家計簿の作成は今後対応します');const name=prompt('新しい家計簿名（この端末内での切り替え）');if(!name?.trim())return;const id=uid();state.books.push({id,name:name.trim(),kind:'shared'});state.activeBook=id;persist();refresh()};$('month').onchange=renderDashboard;$('accountingMode').onchange=renderDashboard;$('purchaseDate').addEventListener('change',()=>{document.querySelectorAll('.item-row .account-month').forEach(el=>{if(el.dataset.changed!=='yes')el.value=$('purchaseDate').value.slice(0,7)})});document.addEventListener('change',e=>{if(e.target?.matches('.item-row .account-month'))e.target.dataset.changed='yes'});$('addItem').onclick=()=>addRow();$('savePurchase').onclick=savePurchase;$('historySearch').oninput=renderHistory;$('historyMode').onchange=renderHistory;['compareSearch','period','fromDate','toDate','originFilter','stateFilter'].forEach(id=>$(id).addEventListener('input',()=>{const custom=$('period').value==='custom';$('fromDate').hidden=!custom;$('toDate').hidden=!custom;renderCompare()}));$('camera').onchange=e=>handleImages(e.target.files);$('images').onchange=e=>handleImages(e.target.files);$('exportJson').onclick=()=>download('receipt-backup-'+today()+'.json',JSON.stringify({...state,learnedRules:window.learningExportRules?.()||state.learnedRules||[]},null,2),'application/json');$('exportCsv').onclick=()=>{const cols=['家計簿','購入日','店舗','商品名','統一商品名','商品全額','計上月','月別計上金額','月別配分数量','数量単位','購入数量','容量','大分類','小分類','産地','状態'];const lines=[cols,...state.purchases.flatMap(p=>p.items.flatMap(i=>accountingAllocations(p,i).map(a=>[state.books.find(b=>b.id===p.bookId)?.name,p.date,p.merchant,i.name,i.canonical,i.amount,a.month,a.amount,a.quantity,i.unit,i.qty,i.size,i.category,i.subcategory,i.origin,i.state])))];download('receipt-allocations-'+today()+'.csv','\ufeff'+lines.map(r=>r.map(csvCell).join(',')).join('\r\n'),'text/csv;charset=utf-8')};$('importJson').onchange=async e=>{if(window.cloudMode){toast('ログアウト後に端末内バックアップを復元してください');e.target.value='';return;}const file=e.target.files?.[0];if(!file)return;try{const incoming=JSON.parse(await file.text());if(incoming.schemaVersion!==1||!Array.isArray(incoming.books)||!Array.isArray(incoming.purchases)||!incoming.books.every(b=>typeof b.id==='string')||!incoming.purchases.every(p=>Array.isArray(p.items)))throw Error('対応していないバックアップ形式です');if(!confirm('現在の端末内データをバックアップ内容で置き換えます。続行しますか？'))return;state=incoming;state.learnedRules||=[];persist();refresh();window.learningOnSignOut?.();toast('バックアップを復元しました')}catch(err){toast(err.message)}finally{e.target.value=''}};$('addAlias').onclick=()=>{const k=$('aliasRaw').value.trim(),v=$('aliasCanonical').value.trim();if(!k||!v)return toast('両方の商品名を入力してください');state.aliases[k]=v;persist();$('aliasRaw').value='';$('aliasCanonical').value='';renderAliases();toast('統一ルールを追加しました（既存履歴は変更しません）')}}
 init();

@@ -82,6 +82,7 @@ async function sbLoad(){
     sbCategories=categories;sbLedger=lid;
     state={schemaVersion:1,books:[myPersonal],activeBook:lid,purchases:mapped,aliases:sbLocal?.aliases||{}};
     window.cloudMode=true;sbUi(true);refresh();
+    if(window.learningOnCloudLoaded)await window.learningOnCloudLoaded();
     sbStatus('クラウド同期中：'+mapped.length+'件を表示しています。手入力の登録・編集・削除が同期されます。');
   }catch(e){sbStatus('読み込みに失敗：'+e.message);if(!window.cloudMode)sbUi(false);}
   finally{sbBusy=false;}
@@ -219,7 +220,7 @@ async function sbImport(){
 function sbLogout(){
   if(!confirm('クラウドからログアウトしますか？'))return;
   sbSessionStore(null);sbLedger=null;window.cloudMode=false;
-  state=sbLocal||structuredClone(DEFAULT);sbLocal=null;sbCategories=[];sbUi(false);refresh();
+  state=sbLocal||structuredClone(DEFAULT);sbLocal=null;sbCategories=[];sbUi(false);refresh();window.learningOnSignOut?.();
   sbStatus('ログアウトしました。端末内データを表示しています。');
 }
 function sbInit(){

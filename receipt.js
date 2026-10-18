@@ -48,7 +48,8 @@ async function scanOne(file){
   if(state.purchases.some(p=>p.receiptFingerprint===hash))return {status:'duplicate',parsed};
   const items=parsed.items.map(({name,amount})=>{
     const [category,subcategory]=guessCategory(name);
-    return {id:uid(),name,canonical:normalize(name),amount,qty:1,size:null,unit:'個',category,subcategory,origin:'',state:''};
+    const base={id:uid(),name,canonical:normalize(name),amount,qty:1,size:null,unit:'個',category,subcategory,origin:'',state:''};
+    return window.learningApplyOCRItem?.(base)||base;
   });
   const p={id:uid(),bookId:sbLedger,date:parsed.date||today(),merchant:parsed.merchant,
     source:'receipt',items,receiptTotal:parsed.total,receiptFingerprint:hash,

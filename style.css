@@ -47,3 +47,27 @@ button.chart-mode-button.selected{background:#1d6c54;color:#fff;box-shadow:0 1px
 .pie-percent{text-align:right;font-variant-numeric:tabular-nums;color:#315b49}
 [hidden]{display:none!important}
 @media(max-width:700px){.pie-layout{grid-template-columns:minmax(0,1fr);gap:20px}.pie-chart{width:min(78vw,290px)}.chart-pie-controls{justify-content:stretch}.chart-pie-controls label{width:100%}.pie-legend-row{grid-template-columns:12px minmax(0,1fr) auto 53px;gap:7px}}
+
+/* v0.8: food-only detail pie, major -> subcategory -> purchased items. */
+.food-breakdown-card{scroll-margin-top:16px}
+.food-breakdown-card:focus{outline:none}
+.food-help{font-size:13px;line-height:1.5;margin:7px 0 0}
+.food-scope-label{min-width:190px;color:#496458}
+.food-highlight{display:flex;align-items:baseline;justify-content:space-between;gap:12px;border-radius:11px;background:#edf6f0;padding:14px 18px;margin:8px 0 16px;color:#375c4b}
+.food-highlight strong{font-size:23px;color:#175b47;font-variant-numeric:tabular-nums}
+.food-crumb{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin:4px 0 14px}
+.food-crumb strong{font-size:14px;color:#315c4a}
+.food-items{border-top:1px solid #e5ebe7;margin-top:15px;padding-top:14px}
+.food-items h4{margin:0 0 9px}
+.food-pie-choice,.pie-legend-link{width:100%;text-align:left;background:transparent;color:inherit;border:0;border-bottom:1px solid #eef2ef;border-radius:7px;cursor:pointer;padding:11px 7px}
+.pie-legend-row.food-pie-choice,.pie-legend-row.pie-legend-link{grid-template-columns:12px minmax(0,1fr) auto 54px 12px}
+.food-pie-choice:hover,.pie-legend-link:hover{background:#e9f6ee;filter:none}
+.food-pie-choice:focus-visible,.pie-legend-link:focus-visible,.interactive-pie:focus-visible,.bar-food-link:focus-visible{outline:3px solid #428f78;outline-offset:2px}
+.food-next{font-size:21px;line-height:1;color:#34735c}
+.interactive-pie{cursor:pointer}
+.bar-food-link{background:transparent;color:#175b47;padding:0;border-radius:3px;text-decoration:underline;text-underline-offset:3px;font-weight:650}
+.bar-food-link:hover{background:#e9f6ee;filter:none}
+@media(max-width:700px){.food-breakdown-card .chart-section-title{align-items:stretch}.food-scope-label{width:100%}.food-highlight{padding:12px}.food-highlight strong{font-size:20px}.pie-legend-row.food-pie-choice,.pie-legend-row.pie-legend-link{grid-template-columns:12px minmax(0,1fr) auto 46px 11px;gap:6px;font-size:12px}}
+
+/* v0.9 learning and predictions */
+#insights article{margin-bottom:16px}.learning-rule,.learning-price-row{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:12px 0;border-bottom:1px solid #dce4df;flex-wrap:wrap}.learning-rule>div{flex:1;min-width:210px}.learning-rule small,.learning-price-row small{color:#66766e}.learning-price-row{align-items:flex-start;flex-direction:column;gap:3px}.learning-date{display:flex;gap:12px;align-items:center;flex-wrap:wrap}.learning-date input{max-width:225px}.learning-forecast-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:14px;margin:15px 0}.learning-forecast-grid>div{padding:16px;border:1px solid #dce4df;border-radius:12px;display:flex;flex-direction:column;gap:7px}.learning-forecast-grid strong{font-size:1.5rem}.learning-forecast-grid small{color:#607469}.learning-forecast-cats{margin-top:20px}.learning-opt{display:flex;align-items:center;gap:8px;margin:12px 0;padding:10px;border-radius:9px;background:#f3f8f4}.learning-opt input{width:19px;height:19px;accent-color:#184d42}.learning-rule button{white-space:nowrap}@media(max-width:600px){.learning-forecast-grid{grid-template-columns:1fr}}
