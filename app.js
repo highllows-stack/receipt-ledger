@@ -45,6 +45,77 @@ wrap.querySelector('.remove').onclick=()=>{wrap.remove();updateFormTotal()};cons
 function updateFormTotal(){let total=0;document.querySelectorAll('.item-row .amount').forEach(x=>total+=Number(x.value)||0);$('formTotal').textContent='合計 '+yen(total)}
 function rowData(row){const v=c=>row.querySelector('.'+c).value;const name=v('raw').trim(),amount=Number(v('amount')),qty=Number(v('qty')),size=v('size')===''?null:Number(v('size'));if(!name||!Number.isFinite(amount)||amount<0||!Number.isFinite(qty)||qty<=0||size!==null&&(!Number.isFinite(size)||size<0))throw Error('商品名・金額・数量を正しく入力してください。');const month=v('account-month');if(!monthIsValid(month))throw Error('計上月を正しく入力してください。');return{id:uid(),name,canonical:normalize(name),amount,qty,size,unit:v('unit'),category:v('category'),subcategory:v('subcategory'),origin:v('origin').trim(),state:v('state'),allocations:[{month,amount,quantity:null}]}}
 function savePurchase(){if(window.cloudMode)return window.cloudSavePurchaseFromForm();const rows=[...document.querySelectorAll('.item-row')];if(!rows.length)return toast('商品を追加してください');try{const items=rows.map(rowData),purchase={id:uid(),bookId:state.activeBook,date:$('purchaseDate').value||today(),merchant:$('merchant').value.trim()||'購入先未設定',source:'manual',items,createdAt:new Date().toISOString(),updatedAt:new Date().toISOString()};state.purchases.unshift(purchase);persist();$('itemInputs').innerHTML='';addRow();$('merchant').value='';refresh();toast('購入を登録しました')}catch(e){toast(e.message)}}
+// Native pickers normally open from their small calendar icon; showPicker enables
+// clicking the displayed year/month/day text as well. Runs only on user gestures.
+function installDatePickerWholeField(){
+  document.addEventListener('click',event=>{
+    const input=event.target.closest?.('input[type="date"],input[type="month"]');
+    if(!input||input.disabled||input.readOnly)return;
+    if(typeof input.showPicker==='function'){
+      try{input.showPicker();}catch(error){ /* platform-native fallback */ }
+    }
+  },true);
+  document.addEventListener('keydown',event=>{
+    if(event.key!=='Enter'&&event.key!==' ')return;
+    const input=event.target;
+    if(!input?.matches?.('input[type="date"],input[type="month"]')||input.disabled||input.readOnly)return;
+    if(typeof input.showPicker==='function'){
+      try{input.showPicker();event.preventDefault();}catch(error){ /* allow native editing */ }
+    }
+  });
+}
+const DASHBOARD_CHART_KEY='receipt-ledger-chart-view-v07';
+const DASHBOARD_PIE_LEVEL_KEY='receipt-ledger-pie-level-v07';
+let dashboardChartView='bar';
+const DASHBOARD_PIE_COLORS=['#23836c','#db8e40','#6188bd','#b96f92','#8375b5','#6c9b42','#d26e5e','#4f91a2','#b2a03c','#956c56','#537e5a','#a36da4'];
+function categoryColor(index){return DASHBOARD_PIE_COLORS[index%DASHBOARD_PIE_COLORS.length]}
+function chartPrefsRead(){
+  try{
+    if(localStorage.getItem(DASHBOARD_CHART_KEY)==='pie')dashboardChartView='pie';
+    const level=localStorage.getItem(DASHBOARD_PIE_LEVEL_KEY);
+    if(level==='minor')$('pieCategoryLevel').value='minor';
+  }catch{}
+  chartButtonsUpdate();
+}
+function chartButtonsUpdate(){
+  const pie=dashboardChartView==='pie';
+  $('barChartPanel').hidden=pie;$('pieChartPanel').hidden=!pie;
+  $('chartBarButton').classList.toggle('selected',!pie);
+  $('chartPieButton').classList.toggle('selected',pie);
+  $('chartBarButton').setAttribute('aria-pressed',String(!pie));
+  $('chartPieButton').setAttribute('aria-pressed',String(pie));
+}
+function setChartView(view){
+  dashboardChartView=view==='pie'?'pie':'bar';
+  try{localStorage.setItem(DASHBOARD_CHART_KEY,dashboardChartView)}catch{}
+  chartButtonsUpdate();renderDashboard();
+}
+function pieDataForRows(rows,level){
+  const sums=new Map();
+  for(const row of rows){
+    const category=row.item.category||'その他';
+    const sub=row.item.subcategory||'未分類';
+    const name=level==='minor'?`${category} / ${sub}`:category;
+    sums.set(name,(sums.get(name)||0)+amountCents(row.amount));
+  }
+  return [...sums.entries()].filter(([_,amount])=>amount>0).sort((a,b)=>b[1]-a[1]);
+}
+function renderCategoryPie(rows,month,mode){
+  const level=$('pieCategoryLevel').value;
+  const entries=pieDataForRows(rows,level),total=entries.reduce((sum,[,value])=>sum+value,0);
+  if(total===0){$('categoryPieContent').innerHTML='<div class="empty">円グラフに表示する支出がありません。</div>';return}
+  let acc=0;
+  const slices=entries.map(([label,value],index)=>{
+    const from=acc/total*100;acc+=value;
+    const to=acc/total*100;
+    return {label,value,color:categoryColor(index),percent:value/total*100,from,to};
+  });
+  // Two equal-angle stops with the same color produce a crisp pie wedge.
+  const gradient=slices.map(s=>`${s.color} ${s.from.toFixed(8)}% ${s.to.toFixed(8)}%`).join(',');
+  const label=`${month.replace('-','年')}月・${mode==='accounted'?'計上月':'購入月'}：${slices.map(s=>s.label+' '+s.percent.toFixed(1)+'%').join('、')}`;
+  const legend=slices.map(s=>`<div class="pie-legend-row"><span class="pie-swatch" style="background:${s.color}" aria-hidden="true"></span><span class="pie-name">${esc(s.label)}</span><span class="pie-amount">${yen(centsAmount(s.value))}</span><strong class="pie-percent">${s.percent.toFixed(1)}%</strong></div>`).join('');
+  $('categoryPieContent').innerHTML=`<div class="pie-chart" style="background:conic-gradient(from -90deg,${gradient})" role="img" aria-label="${esc(label)}"></div><div class="pie-legend"><p class="pie-sum">支出合計 <strong>${yen(centsAmount(total))}</strong></p>${legend}</div>`;
+}
 function renderDashboard(){
   const month=$('month').value,mode=$('accountingMode').value;
   const rows=monthRows(month,mode), sumCents=rows.reduce((s,r)=>s+amountCents(r.amount),0);
@@ -57,6 +128,7 @@ function renderDashboard(){
   const sums={};for(const r of rows)sums[r.item.category]=(sums[r.item.category]||0)+amountCents(r.amount);
   const max=Math.max(1,...Object.values(sums));
   $('categoryBars').innerHTML=Object.entries(sums).sort((a,b)=>b[1]-a[1]).map(([k,v])=>`<div class="bar"><div class="bar-head"><span>${esc(k)}</span><strong>${yen(centsAmount(v))}</strong></div><div class="track"><div class="fill" style="width:${v/max*100}%"></div></div></div>`).join('')||'<div class="empty">この月の計上履歴はありません。</div>';
+  renderCategoryPie(rows,month,mode);
   const cats=new Map();
   for(const r of rows){const category=r.item.category||'その他',sub=r.item.subcategory||'未分類';
     if(!cats.has(category))cats.set(category,new Map());
@@ -86,5 +158,5 @@ function refresh(){bookOptions();renderDashboard();renderHistory();renderCompare
 function download(filename,content,mime){const blob=new Blob([content],{type:mime});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download=filename;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000)}
 function csvCell(v){return '"'+String(v??'').replaceAll('"','""')+'"'}
 function handleImages(files){pendingImages.push(...Array.from(files));if(window.receiptQueueChanged)window.receiptQueueChanged();else $('imageQueue').textContent=pendingImages.length+'枚選択しました。'}
-function init(){if('serviceWorker'in navigator&&location.protocol!=='file:')navigator.serviceWorker.register('./sw.js').catch(()=>{});$('month').value=today().slice(0,7);$('purchaseDate').value=today();addRow();refresh();document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{document.querySelectorAll('nav button').forEach(x=>x.classList.toggle('active',x===b));document.querySelectorAll('.tab').forEach(x=>x.classList.toggle('active',x.id===b.dataset.tab));refresh()});$('book').onchange=e=>{if(window.cloudMode){e.target.value=state.activeBook;return;}state.activeBook=e.target.value;persist();refresh()};$('addBook').onclick=()=>{if(window.cloudMode)return toast('共有家計簿の作成は今後対応します');const name=prompt('新しい家計簿名（この端末内での切り替え）');if(!name?.trim())return;const id=uid();state.books.push({id,name:name.trim(),kind:'shared'});state.activeBook=id;persist();refresh()};$('month').onchange=renderDashboard;$('accountingMode').onchange=renderDashboard;$('purchaseDate').addEventListener('change',()=>{document.querySelectorAll('.item-row .account-month').forEach(el=>{if(el.dataset.changed!=='yes')el.value=$('purchaseDate').value.slice(0,7)})});document.addEventListener('change',e=>{if(e.target?.matches('.item-row .account-month'))e.target.dataset.changed='yes'});$('addItem').onclick=()=>addRow();$('savePurchase').onclick=savePurchase;$('historySearch').oninput=renderHistory;$('historyMode').onchange=renderHistory;['compareSearch','period','fromDate','toDate','originFilter','stateFilter'].forEach(id=>$(id).addEventListener('input',()=>{const custom=$('period').value==='custom';$('fromDate').hidden=!custom;$('toDate').hidden=!custom;renderCompare()}));$('camera').onchange=e=>handleImages(e.target.files);$('images').onchange=e=>handleImages(e.target.files);$('exportJson').onclick=()=>download('receipt-backup-'+today()+'.json',JSON.stringify(state,null,2),'application/json');$('exportCsv').onclick=()=>{const cols=['家計簿','購入日','店舗','商品名','統一商品名','商品全額','計上月','月別計上金額','月別配分数量','数量単位','購入数量','容量','大分類','小分類','産地','状態'];const lines=[cols,...state.purchases.flatMap(p=>p.items.flatMap(i=>accountingAllocations(p,i).map(a=>[state.books.find(b=>b.id===p.bookId)?.name,p.date,p.merchant,i.name,i.canonical,i.amount,a.month,a.amount,a.quantity,i.unit,i.qty,i.size,i.category,i.subcategory,i.origin,i.state])))];download('receipt-allocations-'+today()+'.csv','\ufeff'+lines.map(r=>r.map(csvCell).join(',')).join('\r\n'),'text/csv;charset=utf-8')};$('importJson').onchange=async e=>{if(window.cloudMode){toast('ログアウト後に端末内バックアップを復元してください');e.target.value='';return;}const file=e.target.files?.[0];if(!file)return;try{const incoming=JSON.parse(await file.text());if(incoming.schemaVersion!==1||!Array.isArray(incoming.books)||!Array.isArray(incoming.purchases)||!incoming.books.every(b=>typeof b.id==='string')||!incoming.purchases.every(p=>Array.isArray(p.items)))throw Error('対応していないバックアップ形式です');if(!confirm('現在の端末内データをバックアップ内容で置き換えます。続行しますか？'))return;state=incoming;persist();refresh();toast('バックアップを復元しました')}catch(err){toast(err.message)}finally{e.target.value=''}};$('addAlias').onclick=()=>{const k=$('aliasRaw').value.trim(),v=$('aliasCanonical').value.trim();if(!k||!v)return toast('両方の商品名を入力してください');state.aliases[k]=v;persist();$('aliasRaw').value='';$('aliasCanonical').value='';renderAliases();toast('統一ルールを追加しました（既存履歴は変更しません）')}}
+function init(){installDatePickerWholeField();chartPrefsRead();$('chartBarButton').onclick=()=>setChartView('bar');$('chartPieButton').onclick=()=>setChartView('pie');$('pieCategoryLevel').onchange=()=>{try{localStorage.setItem(DASHBOARD_PIE_LEVEL_KEY,$('pieCategoryLevel').value)}catch{}renderDashboard()};if('serviceWorker'in navigator&&location.protocol!=='file:')navigator.serviceWorker.register('./sw.js').catch(()=>{});$('month').value=today().slice(0,7);$('purchaseDate').value=today();addRow();refresh();document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{document.querySelectorAll('nav button').forEach(x=>x.classList.toggle('active',x===b));document.querySelectorAll('.tab').forEach(x=>x.classList.toggle('active',x.id===b.dataset.tab));refresh()});$('book').onchange=e=>{if(window.cloudMode){e.target.value=state.activeBook;return;}state.activeBook=e.target.value;persist();refresh()};$('addBook').onclick=()=>{if(window.cloudMode)return toast('共有家計簿の作成は今後対応します');const name=prompt('新しい家計簿名（この端末内での切り替え）');if(!name?.trim())return;const id=uid();state.books.push({id,name:name.trim(),kind:'shared'});state.activeBook=id;persist();refresh()};$('month').onchange=renderDashboard;$('accountingMode').onchange=renderDashboard;$('purchaseDate').addEventListener('change',()=>{document.querySelectorAll('.item-row .account-month').forEach(el=>{if(el.dataset.changed!=='yes')el.value=$('purchaseDate').value.slice(0,7)})});document.addEventListener('change',e=>{if(e.target?.matches('.item-row .account-month'))e.target.dataset.changed='yes'});$('addItem').onclick=()=>addRow();$('savePurchase').onclick=savePurchase;$('historySearch').oninput=renderHistory;$('historyMode').onchange=renderHistory;['compareSearch','period','fromDate','toDate','originFilter','stateFilter'].forEach(id=>$(id).addEventListener('input',()=>{const custom=$('period').value==='custom';$('fromDate').hidden=!custom;$('toDate').hidden=!custom;renderCompare()}));$('camera').onchange=e=>handleImages(e.target.files);$('images').onchange=e=>handleImages(e.target.files);$('exportJson').onclick=()=>download('receipt-backup-'+today()+'.json',JSON.stringify(state,null,2),'application/json');$('exportCsv').onclick=()=>{const cols=['家計簿','購入日','店舗','商品名','統一商品名','商品全額','計上月','月別計上金額','月別配分数量','数量単位','購入数量','容量','大分類','小分類','産地','状態'];const lines=[cols,...state.purchases.flatMap(p=>p.items.flatMap(i=>accountingAllocations(p,i).map(a=>[state.books.find(b=>b.id===p.bookId)?.name,p.date,p.merchant,i.name,i.canonical,i.amount,a.month,a.amount,a.quantity,i.unit,i.qty,i.size,i.category,i.subcategory,i.origin,i.state])))];download('receipt-allocations-'+today()+'.csv','\ufeff'+lines.map(r=>r.map(csvCell).join(',')).join('\r\n'),'text/csv;charset=utf-8')};$('importJson').onchange=async e=>{if(window.cloudMode){toast('ログアウト後に端末内バックアップを復元してください');e.target.value='';return;}const file=e.target.files?.[0];if(!file)return;try{const incoming=JSON.parse(await file.text());if(incoming.schemaVersion!==1||!Array.isArray(incoming.books)||!Array.isArray(incoming.purchases)||!incoming.books.every(b=>typeof b.id==='string')||!incoming.purchases.every(p=>Array.isArray(p.items)))throw Error('対応していないバックアップ形式です');if(!confirm('現在の端末内データをバックアップ内容で置き換えます。続行しますか？'))return;state=incoming;persist();refresh();toast('バックアップを復元しました')}catch(err){toast(err.message)}finally{e.target.value=''}};$('addAlias').onclick=()=>{const k=$('aliasRaw').value.trim(),v=$('aliasCanonical').value.trim();if(!k||!v)return toast('両方の商品名を入力してください');state.aliases[k]=v;persist();$('aliasRaw').value='';$('aliasCanonical').value='';renderAliases();toast('統一ルールを追加しました（既存履歴は変更しません）')}}
 init();
