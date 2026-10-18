@@ -1,40 +1,26 @@
-# くらしのレシート v0.4（初期 OCR 対応）
+# くらしのレシート v0.5（OCR分類改善・購入明細の手動編集）
 
-**対象**: Android / Windows PWA、個人用Supabase家計簿。GitHub Pages `https://highllows-stack.github.io/receipt-ledger/`。
+## 更新するもの
+このフォルダ内の **Webアプリ用ファイル** を、従来と同じ GitHub リポジトリ `highllows-stack/receipt-ledger` の `main` にアップロードしてください。更新後はアプリ画面に「編集改善・OCR連携 v0.5」と表示されます。
 
-## 公開前に（必須）
+SupabaseのSQL・Edge Function・Google Cloud APIキーは**変更不要**です。データベースの削除や初期化も不要です。
 
-1. Supabase の `receipt-ledger` プロジェクトで SQL Editor を開き、`ocr-setup.sql` を全て貼り付けて Run。過去の購入履歴は削除しません。
-2. Supabase Edge Functions → Functions → Deploy a new function → Via Editor。関数名は厳密に `receipt-ocr`。
-3. エディタにある既存コードをすべて削除し、`receipt-ocr-edge-function.ts` の全文を貼り付けて **Deploy function**。
-4. Edge Functions → Secrets に `GOOGLE_VISION_API_KEY` が保存されていることを確認（値を公開しない）。
-5. 本ZIPのうち `index.html`, `app.js`, `cloud.js`, `ocr-parser.js`, `receipt.js`, `sw.js`, `style.css`, `manifest.webmanifest`, `README.md`, アイコン類を GitHub `highllows-stack/receipt-ledger` リポジトリにアップロード（同名ファイルは置換）。`receipt-ocr-edge-function.ts` と `ocr-setup.sql` は、誤操作を避けるため GitHub Pages の公開ルートには置かないでください（これらには秘密鍵はありませんが、設定用ファイルです）。
-6. GitHub Pages で v0.4 の画面が表示されたら、テスト用のレシートを1枚読み取る。アプリの「設定」からSupabaseにログインしておいてください。
+更新前に v0.4 アプリの「設定」から「JSONバックアップを書き出す」を実行し、端末に保管してください。
 
-## 今回できること
+## 新機能
+- 「履歴」→購入行を開く→「購入全体を編集・明細を分割」で購入日、店舗、合計金額、確認状況を修正
+- 既存の商品行で「編集」を押しても同じ編集画面へ移動
+- 商品の名称、統一名称、税込金額、数量、容量・重量、単位、大分類、小分類、産地、冷凍・冷蔵を編集
+- 商品行の「この明細を分割」は金額を半分ずつにした2行を作成します（分割後に内容を編集してください）。「＋明細を追加」「削除」も可能
+- 「米」「無洗米」「精米」「コシヒカリ」「あかふじ」などの食品分類を「食材 ＞ 米・麺類」に改善
+- OCRの電話番号・決済などの行を商品として誤検出するケースを軽減
 
-- 画像からGoogle Cloud Vision経由で文字読み取り（ログイン必須）
-- 画像の複数選択、順番に処理、商品明細の自動登録
-- レシートOCRのヒューリスティックな解析（商品名・税込金額、日付、店舗、合計）
-- 不整合時に要確認として登録（OCRが少なくとも商品1件と金額を抽出できた場合）
-- 同一のOCR文字列からの重複登録の抑止
-- 月間API呼び出し件数制限（本人100回、全体500回）
-- 画像はSupabase Storageに保存しない。Edge Functionは文字列だけを返す
+## 制限
+- Google Cloud Vision APIが返す文字認識自体は同じです。店名・明細の分離や文字認識精度はレシートの写真や印字によって変わり、完全な自動認識は保証できません。
+- OCRで誤登録された明細は、「履歴」から後で修正してください。元画像をクラウドに保存しません。
+- クラウドの編集は明細を逐次更新します。通信障害時に一部だけ更新される可能性があるため、再読み込みして変更内容を確認してください。大切なデータはJSONバックアップを保管してください。
+- 他の端末で同時編集した場合は、最後に保存した側の編集が優先される可能性があります。
+- 共有ユーザー招待・原本画像30日保存は引き続き未実装です。
 
-## 現時点の制限・注意
-
-- OCR抽出は試験実装です。価格、店舗、日付、分類の誤認識があり得ます。自動保存されるため、登録後に履歴を確認してください。
-- 値引・税・ポイント・クーポン・バーコードなどの処理は未完成です。「要確認」の購入履歴は実際の合計と違う可能性があります。
-- OCRに失敗して1商品も抽出できなかった画像はクラウド登録されず、画像キューにエラー表示が残ります。選択解除またはブラウザ再起動でキューは消えます。
-- レシート画像は持続的に保存しません。以前相談した「画像を30日保存して自動削除」はこの版では未実装です。
-- Cloud Visionの請求先設定とAPIキーの許可設定が必要です。Google Cloudの予算アラートは課金停止機能ではありません。Google側の他のプロジェクト・キーでの利用回数は、このアプリでは制御できません。
-- SQLの回数制限は月ごとにリセットされます。処理失敗でも回数消費する安全側の設計です。
-- Edge Functionの接続先サイトは `https://highllows-stack.github.io` に限定されています。別サイトへ移転する際はCORS設定の変更が必要です。
-- 同期や共有メンバー招待など旧版の制限は継続します。既存のSupabase購入履歴を消去する処理はありません。
-
-## 開発/配置上の注意
-
-- `GOOGLE_VISION_API_KEY` やSupabase Secret/service_roleはGitHubにコミットしない。
-- `receipt-ocr-edge-function.ts` はサーバー側の機能。ファイルをGitHub Pagesに置いても実行されません。
-- Supabaseの初期スキーマ `receipt-ledger-supabase-setup.sql` は再実行しない（既存ポリシー重複のおそれ）。v0.4の `ocr-setup.sql` だけ実行します。
-- 既存データを扱う前にアプリ設定画面から JSON バックアップを保管しておきます。
+## 初回の表示更新
+GitHub Pagesの反映後、アプリを閉じて開き直してください。v0.4のままなら、PCのChromeで `https://highllows-stack.github.io/receipt-ledger/?v=0.5` を開き、`Ctrl+Shift+R` で強制再読み込みしてください。スマホはアプリを完全に終了してから再起動してください。

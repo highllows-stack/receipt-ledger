@@ -153,6 +153,54 @@ window.cloudEditItem=async function(pid,iid){
   }catch(e){toast('編集失敗：'+e.message);sbBusy=false;return;}
   sbBusy=false;await sbLoad();
 };
+// Edit whole receipt/purchase with category, quantities and split lines.
+// Writes each row with stable IDs; deletions are last to reduce accidental data loss.
+window.cloudSaveEditedPurchase=async function(original,edited){
+  if(sbBusy)throw Error('別の同期処理中です。少し待ってください。');
+  if(!window.cloudMode||!sbSession?.access_token||!sbLedger)throw Error('再ログインしてください。');
+  if(original.bookId!==sbLedger||edited.id!==original.id)throw Error('編集中の家計簿が違います。再読み込みしてください。');
+  sbBusy=true;
+  let saved=false;
+  try{
+    // Resolve categories before modifying purchase rows.
+    const prepared=[];
+    for(const i of edited.items){
+      const cat=await sbCategory(i.category,i.subcategory);
+      const values={purchase_id:edited.id,ledger_id:sbLedger,name:i.name,normalized_name:i.canonical,
+        quantity:Number(i.qty),unit:i.unit,package_amount:i.size??null,package_unit:i.unit,
+        origin:i.origin||null,storage_type:i.state||null,line_total:Number(i.amount),
+        unit_price:Math.round(Number(i.amount)/Number(i.qty)*100)/100,category_id:cat};
+      prepared.push({id:i.id,values});
+    }
+    const priorIds=new Set(original.items.map(i=>i.id));
+    const retained=new Set(edited.items.map(i=>i.id));
+    // Insert first so no items are lost if another action fails.
+    for(const row of prepared){if(!priorIds.has(row.id))await sbPost('purchase_items',[{id:row.id,...row.values}]);}
+    for(const row of prepared){
+      if(!priorIds.has(row.id))continue;
+      const changed=await sbApi('/rest/v1/purchase_items?id=eq.'+encodeURIComponent(row.id)+
+        '&purchase_id=eq.'+encodeURIComponent(edited.id)+'&ledger_id=eq.'+encodeURIComponent(sbLedger),
+        {method:'PATCH',data:row.values,extraHeaders:{Prefer:'return=representation'}});
+      if(!Array.isArray(changed)||changed.length!==1)throw Error('商品の更新権限または対象明細を確認してください。');
+    }
+    const changedPurchase=await sbApi('/rest/v1/purchases?id=eq.'+encodeURIComponent(edited.id)+
+      '&ledger_id=eq.'+encodeURIComponent(sbLedger),{method:'PATCH',data:{
+        purchased_at:edited.date+'T12:00:00+09:00',store_name:edited.merchant,
+        receipt_total:edited.receiptTotal,review_status:edited.reviewStatus},extraHeaders:{Prefer:'return=representation'}});
+    if(!Array.isArray(changedPurchase)||changedPurchase.length!==1)throw Error('購入の更新権限を確認してください。');
+    for(const old of original.items){
+      if(retained.has(old.id))continue;
+      await sbApi('/rest/v1/purchase_items?id=eq.'+encodeURIComponent(old.id)+
+        '&purchase_id=eq.'+encodeURIComponent(edited.id)+'&ledger_id=eq.'+encodeURIComponent(sbLedger),{method:'DELETE'});
+    }
+    saved=true;
+  }finally{
+    sbBusy=false;
+    // In case of partial network failure, reload from actual DB, not a local approximation.
+    try{await sbLoad()}catch(e){console.error('Reload after edit failed',e);}
+    if(!saved)console.warn('Partial edit may have been saved. Review this purchase.');
+  }
+};
 async function sbImport(){
   if(sbBusy||!sbLedger)return;
   const old=sbLocal;

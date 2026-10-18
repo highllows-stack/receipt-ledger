@@ -1,13 +1,8 @@
-くらしのレシート v0.2：Android・Windows共通PWA 公開手順
-
-重要：この版は手入力の試作版です。OCR・クラウド同期・複数人共有は未実装です。ブラウザ内に保存されたデータは他端末には同期されません。公開後も定期的にJSONバックアップを取得してください。
-
-1. https://github.com/ にサインイン（未登録なら無料アカウント作成）。
-2. 右上「＋」→「New repository」。名前を receipt-ledger などにし、Publicで作成。公開リポジトリに購入履歴や秘密鍵を置かないでください。
-3. 「uploading an existing file」または「Add file」→「Upload files」。このZIPを解凍し、中のファイル一式（フォルダそのものではなく index.html が最上位になるように）をアップロードして Commit changes。
-4. リポジトリの「Settings」→「Pages」→「Build and deployment」→ Source「Deploy from a branch」、Branch「main」、Folder「/(root)」を選んで Save。
-5. 公開URL https://ユーザー名.github.io/receipt-ledger/ をAndroidのChromeで開く。Chromeの「︙」→「ホーム画面に追加」または「アプリをインストール」。
-6. WindowsのChromeでも同じURLを開く。必要に応じてChromeの「アプリをインストール」を選ぶ。
-
-注意：GitHub Pagesは静的ファイルを公開するだけです。Google Cloud VisionのAPIキーやSupabaseの秘密鍵は決してここにアップロードしないでください。OCR連携には認証付きのサーバー側APIを別途実装します。
-更新時は同じリポジトリ内のファイルを更新します。既存データを確実に守るには将来のSupabase接続とバックアップが必要です。
+v0.5 アップロード手順
+1) 設定 > JSONバックアップを書き出す
+2) ZIP をすべて展開
+3) https://github.com/highllows-stack/receipt-ledger/upload/main へ Webアプリの全ファイルをアップロード
+4) Commit changes を押す
+5) https://highllows-stack.github.io/receipt-ledger/?v=0.5 を開く
+6) 「編集改善・OCR連携 v0.5」が表示されたら、履歴 > 購入全体を編集・明細を分割 を試す
+※ Supabase側のSQL・Edge Function再デプロイは不要。過去のデータは変更されません。
