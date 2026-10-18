@@ -51,14 +51,17 @@ async function scanOne(file){
     const base={id:uid(),name,canonical:normalize(name),amount,qty:1,size:null,unit:'個',category,subcategory,origin:'',state:''};
     return window.learningApplyOCRItem?.(base)||base;
   });
+  const unverified=items.filter(i=>i.smartPrediction?.level!=='high');
+  const warnings=[...parsed.warnings];
+  if(unverified.length)warnings.push(unverified.length+'商品の分類は推測・未確定です。履歴から確認してください');
   const p={id:uid(),bookId:sbLedger,date:parsed.date||today(),merchant:parsed.merchant,
     source:'receipt',items,receiptTotal:parsed.total,receiptFingerprint:hash,
-    reviewStatus:parsed.warnings.length?'needs_review':'ok'};
+    reviewStatus:warnings.length?'needs_review':'ok'};
   try{await sbInsert(p)}catch(e){
     if(/duplicate key|23505|unique constraint/i.test(e.message))return {status:'duplicate',parsed};
     throw e;
   }
-  return {status:parsed.warnings.length?'review':'ok',parsed};
+  return {status:warnings.length?'review':'ok',parsed:{...parsed,warnings}};
 }
 async function receiptScanAll(){
   if(receiptRunning||sbBusy)return receiptStatus('処理中です。少し待ってください');

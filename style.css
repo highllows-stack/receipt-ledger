@@ -71,3 +71,15 @@ button.chart-mode-button.selected{background:#1d6c54;color:#fff;box-shadow:0 1px
 
 /* v0.9 learning and predictions */
 #insights article{margin-bottom:16px}.learning-rule,.learning-price-row{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:12px 0;border-bottom:1px solid #dce4df;flex-wrap:wrap}.learning-rule>div{flex:1;min-width:210px}.learning-rule small,.learning-price-row small{color:#66766e}.learning-price-row{align-items:flex-start;flex-direction:column;gap:3px}.learning-date{display:flex;gap:12px;align-items:center;flex-wrap:wrap}.learning-date input{max-width:225px}.learning-forecast-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:14px;margin:15px 0}.learning-forecast-grid>div{padding:16px;border:1px solid #dce4df;border-radius:12px;display:flex;flex-direction:column;gap:7px}.learning-forecast-grid strong{font-size:1.5rem}.learning-forecast-grid small{color:#607469}.learning-forecast-cats{margin-top:20px}.learning-opt{display:flex;align-items:center;gap:8px;margin:12px 0;padding:10px;border-radius:9px;background:#f3f8f4}.learning-opt input{width:19px;height:19px;accent-color:#184d42}.learning-rule button{white-space:nowrap}@media(max-width:600px){.learning-forecast-grid{grid-template-columns:1fr}}
+
+/* v1.0 no-paid-AI product classification preview and inline hints */
+.smart-preview-form label{display:block;font-weight:650;margin-bottom:8px}
+.smart-preview-input{display:flex;gap:10px;flex-wrap:wrap;align-items:stretch}
+.smart-preview-input input{flex:1 1 260px;min-width:0}
+.smart-preview-input button{flex:0 0 auto}
+.smart-preview-result{margin-top:14px;padding:15px;border-radius:10px;border:1px solid #bfd5c8;background:#f4faf5;display:flex;flex-direction:column;gap:9px;line-height:1.5}
+.smart-preview-result ul{margin:0;padding-left:1.4em}
+.smart-preview-result small{color:#526c5d}
+.smart-level{font-size:.87em;color:#40594e}
+.smart-inline-note{padding:8px 10px;border-radius:7px;background:#eef6ef;margin-top:8px;color:#345e46;font-size:.85rem}
+@media(max-width:600px){.smart-preview-input button{width:100%}.smart-preview-input input{flex-basis:100%}}
