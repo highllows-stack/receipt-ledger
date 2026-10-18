@@ -75,7 +75,7 @@ async function sbLoad(){
         const cat=catMap.get(i.category_id),parent=catMap.get(cat?.parent_id);
         return{id:i.id,name:i.name,canonical:i.normalized_name||i.name,amount:Number(i.line_total),qty:Number(i.quantity),
           size:i.package_amount===null?null:Number(i.package_amount),unit:i.package_unit||i.unit||'g',
-          category:parent?.name||'その他',subcategory:cat?.name||'未分類',origin:i.origin||'',state:i.storage_type||''};
+          category:parent?.name||'その他',subcategory:cat?.name||'未分類',origin:i.origin||'',state:i.storage_type||'',allocations:Array.isArray(i.accounting_allocations)?i.accounting_allocations:[]};
       })
     }));
     if(!window.cloudMode)sbLocal=structuredClone(state);
@@ -111,7 +111,7 @@ async function sbInsert(p){
       normalized_name:i.canonical||i.name,quantity:Number(i.qty),unit:i.unit,
       package_amount:i.size&&Number(i.size)>0?Number(i.size):null,package_unit:i.unit,
       origin:i.origin||null,storage_type:i.state||null,line_total:Number(i.amount),
-      unit_price:Number(i.amount)/Number(i.qty),category_id:await sbCategory(i.category,i.subcategory)});}
+      unit_price:Number(i.amount)/Number(i.qty),category_id:await sbCategory(i.category,i.subcategory),accounting_allocations:i.allocations||[]});}
     await sbPost('purchase_items',mapped);
   }catch(e){
     // Compensating rollback for failed line-item saves; avoid an empty purchase.
@@ -169,7 +169,7 @@ window.cloudSaveEditedPurchase=async function(original,edited){
       const values={purchase_id:edited.id,ledger_id:sbLedger,name:i.name,normalized_name:i.canonical,
         quantity:Number(i.qty),unit:i.unit,package_amount:i.size??null,package_unit:i.unit,
         origin:i.origin||null,storage_type:i.state||null,line_total:Number(i.amount),
-        unit_price:Math.round(Number(i.amount)/Number(i.qty)*100)/100,category_id:cat};
+        unit_price:Math.round(Number(i.amount)/Number(i.qty)*100)/100,category_id:cat,accounting_allocations:i.allocations||[]};
       prepared.push({id:i.id,values});
     }
     const priorIds=new Set(original.items.map(i=>i.id));

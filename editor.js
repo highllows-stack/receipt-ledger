@@ -1,9 +1,109 @@
 'use strict';
-// Purchase editor for both on-device and Supabase records. No schema migration required.
+// Purchase editor; v0.6 stores monthly allocation plans on each purchase item.
 let currentEditPurchase=null;
 let purchaseEditorBusy=false;
 const editGet=id=>document.getElementById(id);
 function editOptions(values,selected){return values.map(v=>`<option value="${esc(v)}"${v===selected?' selected':''}>${esc(v)}</option>`).join('');}
+function editAllocationElement(plan){
+  const el=document.createElement('div');el.className='accounting-row';
+  el.innerHTML=`<label>計上月<input class="a-month" type="month" value="${esc(plan.month||today().slice(0,7))}"></label>
+    <label>計上金額（円）<input class="a-amount" type="number" min="0" step="0.01" value="${Number(plan.amount??0)}"></label>
+    <label>配分量（任意）<input class="a-qty" type="number" min="0.001" step="0.001" placeholder="例：2" value="${plan.quantity==null?'':Number(plan.quantity)}"></label>
+    <button type="button" class="secondary a-remove">削除</button>`;
+  el.querySelector('.a-remove').onclick=()=>{
+    const parent=el.parentElement;
+    if(parent.children.length===1)return editStatus('計上月を最低1件設定してください。');
+    el.remove();editTotals();
+  };
+  el.querySelectorAll('input').forEach(input=>input.addEventListener('input',()=>{
+    const wrap=el.closest('.purchase-edit-row');
+    if(input.classList.contains('a-amount'))wrap.dataset.autoSingleAmount='no';
+    editTotals();
+  }));
+  return el;
+}
+function editSetAllocations(wrap,allocations){
+  const list=wrap.querySelector('.account-list');list.replaceChildren();
+  allocations.forEach(a=>list.append(editAllocationElement(a)));
+  wrap.dataset.autoSingleAmount=allocations.length===1?'yes':'no';
+  editTotals();
+}
+function editAllocationSummary(wrap){
+  const list=[...wrap.querySelectorAll('.accounting-row')], total=amountCents(wrap.querySelector('.e-amount').value);
+  const actual=list.reduce((s,r)=>s+amountCents(r.querySelector('.a-amount').value),0);
+  const qtyInputs=list.map(r=>r.querySelector('.a-qty').value.trim());
+  const anyQty=qtyInputs.some(Boolean),allQty=qtyInputs.every(Boolean);
+  const purchased=accountingTotalQuantity({qty:wrap.querySelector('.e-qty').value,size:wrap.querySelector('.e-size').value||null});
+  const unit=wrap.querySelector('.e-unit').value;
+  const qtySum=qtyInputs.reduce((s,q)=>s+Number(q||0),0);
+  const badQty=anyQty&&(!allQty||Math.abs(qtySum-purchased)>0.001);
+  const badAmount=total!==actual;
+  const summary=wrap.querySelector('.account-summary');
+  summary.classList.toggle('warning',badQty||badAmount);
+  summary.textContent=`計上額 ${yen(centsAmount(actual))} / 商品金額 ${yen(centsAmount(total))}`+
+    (badAmount?' （金額が一致しません）':' （一致）')+
+    (anyQty?`｜配分量 ${Number(qtySum.toFixed(3))} / 購入量 ${Number(purchased.toFixed(3))} ${unit}`+(badQty?' （数量が一致しません）':''):'｜配分量は任意。入力すると合計数量も検証します。');
+}
+function editAllocationPlan(wrap,name,amount){
+  const list=[...wrap.querySelectorAll('.accounting-row')];
+  if(!list.length)throw Error(`${name}：計上月を設定してください。`);
+  if(list.length>36)throw Error(`${name}：月別配分は最大36件です。`);
+  const seen=new Set();let actual=0,qtySum=0,qtyCount=0;
+  const alloc=list.map(r=>{
+    const month=r.querySelector('.a-month').value;
+    const amountText=r.querySelector('.a-amount').value.trim();
+    const qtyText=r.querySelector('.a-qty').value.trim();
+    const value=Number(amountText);
+    if(!monthIsValid(month)||seen.has(month))throw Error(`${name}：計上月が未入力か、同じ月が重複しています。`);
+    if(!amountText||!Number.isFinite(value)||value<0||Math.abs(value*100-Math.round(value*100))>0.000001)throw Error(`${name}：計上金額を0円以上、小数第2位までで入力してください。`);
+    let quantity=null;
+    if(qtyText){quantity=Number(qtyText);if(!Number.isFinite(quantity)||quantity<=0)throw Error(`${name}：配分量を正しく入力してください。`);qtySum+=quantity;qtyCount++}
+    seen.add(month);actual+=amountCents(value);
+    return{month,amount:centsAmount(amountCents(value)),quantity};
+  });
+  if(actual!==amountCents(amount))throw Error(`${name}：月別計上金額の合計 ${yen(centsAmount(actual))} と商品金額 ${yen(amount)} が一致しません。`);
+  if(qtyCount&&qtyCount!==list.length)throw Error(`${name}：配分量を入力する場合は、すべての月に入力してください。`);
+  if(qtyCount){
+    const purchased=accountingTotalQuantity({qty:wrap.querySelector('.e-qty').value,size:wrap.querySelector('.e-size').value||null});
+    if(Math.abs(qtySum-purchased)>0.001)throw Error(`${name}：配分量の合計 ${qtySum} と購入量 ${purchased} が一致しません。`);
+  }
+  return alloc;
+}
+// Split integer cents according to fractional physical quantities, distributing rounding remainders fairly.
+function distributeCents(totalCents,weights){
+  const total=weights.reduce((a,b)=>a+b,0);
+  if(total<=0)throw Error('配分量を入力してください。');
+  const exact=weights.map(w=>totalCents*w/total);
+  const cents=exact.map(Math.floor);
+  let remaining=totalCents-cents.reduce((a,b)=>a+b,0);
+  const sorted=exact.map((v,i)=>({i,part:v-Math.floor(v)})).sort((a,b)=>b.part-a.part);
+  for(let i=0;i<remaining;i++)cents[sorted[i].i]++;
+  return cents;
+}
+function editAllocateByQuantity(wrap){
+  try{
+    const list=[...wrap.querySelectorAll('.accounting-row')];
+    if(!list.length)throw Error('計上月を入力してください。');
+    const amounts=list.map(el=>Number(el.querySelector('.a-qty').value));
+    if(amounts.some(n=>!Number.isFinite(n)||n<=0))throw Error('すべての月の「配分量」を入力してください。');
+    const bought=accountingTotalQuantity({qty:wrap.querySelector('.e-qty').value,size:wrap.querySelector('.e-size').value||null});
+    const sum=amounts.reduce((a,b)=>a+b,0);
+    if(Math.abs(sum-bought)>0.001)throw Error(`配分量の合計が購入量と異なります。購入量 ${bought} ${wrap.querySelector('.e-unit').value} / 配分量 ${sum}`);
+    const fullAmount=Number(wrap.querySelector('.e-amount').value);
+    if(!Number.isFinite(fullAmount)||fullAmount<0)throw Error('商品金額を入力してください。');
+    const cents=distributeCents(amountCents(fullAmount),amounts);
+    list.forEach((el,i)=>el.querySelector('.a-amount').value=String(centsAmount(cents[i])));
+    wrap.dataset.autoSingleAmount='no';editTotals();
+    editStatus(`数量比で金額を配分しました。保存前に金額を確認してください。`);
+  }catch(e){editStatus(e.message)}
+}
+function editSplitAllocationPlans(plans,targetCents){
+  const base=plans.map(a=>amountCents(a.amount));
+  const left=distributeCents(targetCents,base);
+  return [plans.map((a,i)=>({...a,amount:centsAmount(left[i]),quantity:a.quantity==null?null:a.quantity/2})),
+    plans.map((a,i)=>({...a,amount:centsAmount(base[i]-left[i]),quantity:a.quantity==null?null:a.quantity/2}))];
+}
+
 function editNewRow(item={}){
   const wrap=document.createElement('section');
   wrap.className='purchase-edit-row';
@@ -22,27 +122,60 @@ function editNewRow(item={}){
   <label>小分類<select class="e-subcategory"></select></label>
   <label>産地<input class="e-origin" maxlength="200" value="${esc(item.origin||'')}"></label>
   <label>状態<select class="e-state">${editOptions(['','冷凍','冷蔵','常温'],item.state||'')}</select></label>
-</div>`;
+</div><div class="account-panel"><header><h4>何月分として計上するか</h4><span class="muted">月別の配分</span></header>
+<p class="account-help">購入日とは別に設定できます。分量配分する場合は、容量・重量と単位を入力してください（例：米5kg）。月別の配分量を入力して「数量比で金額を配分」を押します。</p>
+<div class="account-list"></div><div class="account-actions"><button type="button" class="secondary a-add">＋月を追加</button><button type="button" class="secondary a-calculate">数量比で金額を自動配分</button></div>
+<div class="account-summary"></div></div>`;
   const cat=wrap.querySelector('.e-category'),sub=wrap.querySelector('.e-subcategory');
   function updateSub(selected){sub.innerHTML=editOptions(GROUPS[cat.value],selected||GROUPS[cat.value][0]);}
   updateSub(initialSub);
   cat.addEventListener('change',()=>updateSub());
+  const defaultMonth=editGet('editDate')?.value.slice(0,7)||currentEditPurchase?.date?.slice(0,7)||today().slice(0,7);
+  const initialized=Array.isArray(item.allocations)&&item.allocations.length?item.allocations:[{month:defaultMonth,amount:Number(item.amount||0),quantity:null}];
+  const planList=wrap.querySelector('.account-list');
+  initialized.forEach(a=>planList.append(editAllocationElement(a)));
+  wrap.dataset.autoSingleAmount=initialized.length===1?'yes':'no';
+  wrap.querySelector('.a-add').addEventListener('click',()=>{
+    const current=[...planList.children];if(current.length>=36)return editStatus('月の配分は最大36件です。');
+    const previous=current[current.length-1],next=monthShift(previous.querySelector('.a-month').value,1);
+    let nextCents=0;
+    if(current.length===1){
+      const prevAmount=amountCents(previous.querySelector('.a-amount').value);
+      nextCents=Math.floor(prevAmount/2);
+      previous.querySelector('.a-amount').value=String(centsAmount(prevAmount-nextCents));
+    }
+    planList.append(editAllocationElement({month:next,amount:centsAmount(nextCents),quantity:null}));
+    wrap.dataset.autoSingleAmount='no';editTotals();
+    planList.lastElementChild.querySelector('.a-month').focus();
+  });
+  wrap.querySelector('.a-calculate').addEventListener('click',()=>editAllocateByQuantity(wrap));
+  wrap.querySelector('.e-amount').addEventListener('input',()=>{
+    if(planList.children.length===1&&wrap.dataset.autoSingleAmount==='yes'){
+      planList.firstElementChild.querySelector('.a-amount').value=wrap.querySelector('.e-amount').value;
+    }
+    editTotals();
+  });
   wrap.querySelector('.edit-remove').addEventListener('click',()=>{
     if(editGet('editItems').children.length===1)return editStatus('最低1商品の明細が必要です。');
     wrap.remove();editTotals();
   });
   wrap.querySelector('.edit-split').addEventListener('click',()=>{
     if(editGet('editItems').children.length>=100)return editStatus('明細は最大100件です。');
-    const draft=editRowData(wrap,false);
-    if(!draft)return editStatus('まず商品名と金額を入力してください。');
-    const half=Math.floor(draft.amount*100/2)/100;
-    if(half<=0)return editStatus('分割するには金額が0円より大きい必要があります。');
-    const copy={...draft,id:uid(),amount:Number((draft.amount-half).toFixed(2)),qty:1};
-    wrap.querySelector('.e-amount').value=String(half);
+    let draft;
+    try{draft=editRowData(wrap,true);}catch(e){return editStatus(e.message);}
+    const halfCents=Math.floor(amountCents(draft.amount)/2);
+    if(halfCents<=0)return editStatus('分割するには商品金額が0円より大きい必要があります。');
+    const qty=draft.qty/2;
+    if(qty<0.001)return editStatus('購入数量が小さすぎて明細を分割できません。');
+    const [left,right]=editSplitAllocationPlans(draft.allocations,halfCents);
+    const copy={...draft,id:uid(),amount:centsAmount(amountCents(draft.amount)-halfCents),qty,allocations:right};
+    wrap.querySelector('.e-amount').value=String(centsAmount(halfCents));
+    wrap.querySelector('.e-qty').value=String(qty);
+    editSetAllocations(wrap,left);
     const newRow=editNewRow(copy);
     wrap.after(newRow);editTotals();
     newRow.querySelector('.e-name').focus();
-    editStatus('明細を2行に分割しました。各商品の名称・金額・分類・数量を修正して保存してください。');
+    editStatus('明細を2行に分割しました。月別配分も金額に合わせて分割しました。必要に応じて各行の数量・品名・配分を修正してください。');
   });
   wrap.querySelectorAll('input,select').forEach(el=>el.addEventListener('input',editTotals));
   return wrap;
@@ -56,6 +189,7 @@ function editTotals(){
   editGet('editMismatch').textContent=diff===null?'レシート合計が不明の場合は空欄でも保存できます。':
     Math.abs(diff)>0.01?`レシート合計との差：${yen(diff)}（要確認になります）`:'レシート合計と一致しています。';
   editGet('editMismatch').classList.toggle('warning',diff!==null&&Math.abs(diff)>0.01);
+  editGet('editItems').querySelectorAll('.purchase-edit-row').forEach(editAllocationSummary);
 }
 function editRowData(row,strict=true){
   const v=cls=>row.querySelector('.'+cls).value;
@@ -69,8 +203,10 @@ function editRowData(row,strict=true){
     return null;
   }
   if(amount>999999999||qty>999999999)return strict?(()=>{throw Error('数値が大きすぎます')})():null;
+  let allocations;
+  try{allocations=editAllocationPlan(row,name,amount);}catch(e){if(strict)throw e;return null;}
   return{id:row.dataset.id,name,canonical,amount,qty,size,unit:v('e-unit'),
-    category:v('e-category'),subcategory:v('e-subcategory'),origin:v('e-origin').trim(),state:v('e-state')};
+    category:v('e-category'),subcategory:v('e-subcategory'),origin:v('e-origin').trim(),state:v('e-state'),allocations};
 }
 window.openPurchaseEditor=function(pid,focusId){
   if(purchaseEditorBusy)return;

@@ -1,8 +1,6 @@
-v0.5 アップロード手順
-1) 設定 > JSONバックアップを書き出す
-2) ZIP をすべて展開
-3) https://github.com/highllows-stack/receipt-ledger/upload/main へ Webアプリの全ファイルをアップロード
-4) Commit changes を押す
-5) https://highllows-stack.github.io/receipt-ledger/?v=0.5 を開く
-6) 「編集改善・OCR連携 v0.5」が表示されたら、履歴 > 購入全体を編集・明細を分割 を試す
-※ Supabase側のSQL・Edge Function再デプロイは不要。過去のデータは変更されません。
+くらしのレシート v0.6 更新方法
+1. 現行アプリからJSONバックアップを保存。
+2. Supabase SQL Editorで receipt-ledger-v0.6-migration.sql を実行。
+3. このZIPのWebアプリファイルをGitHubの receipt-ledger リポジトリにアップロード。
+4. https://highllows-stack.github.io/receipt-ledger/?v=0.6 を開く。
+詳細は README.md を参照してください。
