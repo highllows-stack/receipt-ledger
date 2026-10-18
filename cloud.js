@@ -70,6 +70,7 @@ async function sbLoad(){
     const mapped=ps.map(p=>({
       id:p.id,bookId:lid,date:new Date(p.purchased_at).toLocaleDateString('sv-SE',{timeZone:'Asia/Tokyo'}),
       merchant:p.store_name||'購入先未設定',source:p.source,createdAt:p.created_at,updatedAt:p.created_at,
+      reviewStatus:p.review_status,receiptTotal:p.receipt_total,receiptFingerprint:p.receipt_fingerprint,
       items:(byPurchase.get(p.id)||[]).map(i=>{
         const cat=catMap.get(i.category_id),parent=catMap.get(cat?.parent_id);
         return{id:i.id,name:i.name,canonical:i.normalized_name||i.name,amount:Number(i.line_total),qty:Number(i.quantity),
@@ -102,7 +103,8 @@ async function sbCategory(major,minor){
 async function sbInsert(p){
   await sbPost('purchases',[{id:p.id,ledger_id:sbLedger,created_by:sbSession.user.id,
     purchased_at:p.date+'T12:00:00+09:00',store_name:p.merchant,source:p.source||'manual',
-    receipt_total:p.items.reduce((sum,i)=>sum+Number(i.amount),0)}]);
+    receipt_total:p.receiptTotal??p.items.reduce((sum,i)=>sum+Number(i.amount),0),
+    receipt_fingerprint:p.receiptFingerprint||null,review_status:p.reviewStatus||'ok'}]);
   try{
     const mapped=[];
     for(const i of p.items){mapped.push({id:i.id,purchase_id:p.id,ledger_id:sbLedger,name:i.name,
