@@ -191,14 +191,20 @@ function editNewRow(item={}){
 }
 function editStatus(msg){editGet('editStatus').textContent=msg;}
 function editTotals(){
-  const sum=[...editGet('editItems').querySelectorAll('.e-amount')].reduce((v,el)=>v+(Number(el.value)||0),0);
-  const total=editGet('editReceiptTotal').value;
-  const diff=total===''?null:Number((sum-Number(total)).toFixed(2));
-  editGet('editSum').textContent='明細合計：'+yen(sum);
-  editGet('editMismatch').textContent=diff===null?'レシート合計が不明の場合は空欄でも保存できます。':
-    Math.abs(diff)>0.01?`レシート合計との差：${yen(diff)}（要確認になります）`:'レシート合計と一致しています。';
-  editGet('editMismatch').classList.toggle('warning',diff!==null&&Math.abs(diff)>0.01);
-  editGet('editItems').querySelectorAll('.purchase-edit-row').forEach(editAllocationSummary);
+  const rows=[...editGet('editItems').querySelectorAll('.purchase-edit-row')];
+  const sum=rows.reduce((v,row)=>v+(Number(row.querySelector('.e-amount')?.value)||0),0);
+  const hasUnknown=rows.some(row=>/未読み取り|確認して入力/.test(row.querySelector('.e-name')?.value||''));
+  const printed=editGet('editReceiptTotal').value;
+  const total=printed===''?null:Number(printed);
+  const diff=total===null?null:Math.round((total-sum)*100)/100;
+  editGet('editSum').textContent='商品明細の税込合計：'+yen(sum)+(total===null?'':' ／ レシート合計：'+yen(total));
+  let message=diff===null?'レシートの合計を確認して入力してください。':
+    Math.abs(diff)>.01?(diff>0?`印字合計に対して ${yen(diff)} 不足しています。商品や税・割引の読み落としを確認してください。`:`印字合計より ${yen(-diff)} 超過しています。小計・カード番号・商品重複を確認してください。`):
+    '税込明細の合計とレシート合計が一致しています。';
+  if(hasUnknown)message+=' 未読み取りの仮明細があります。';
+  editGet('editMismatch').textContent=message;
+  editGet('editMismatch').classList.toggle('warning',diff===null||Math.abs(diff)>.01||hasUnknown);
+  rows.forEach(editAllocationSummary);
 }
 function editRowData(row,strict=true){
   const v=cls=>row.querySelector('.'+cls).value;
@@ -252,10 +258,11 @@ async function editSave(){
     if(total!==null&&(!Number.isFinite(total)||total<0))throw Error('レシート合計の金額を確認してください。');
     const sum=items.reduce((v,i)=>v+i.amount,0);
     const mismatch=total!==null&&Math.abs(sum-total)>0.01;
+    const unresolved=items.some(i=>/未読み取り|確認して入力/.test(i.name)||(!i.amount&&i.category==='その他')); 
     const removed=prior.items.filter(i=>!items.some(n=>n.id===i.id)).map(i=>i.id);
     if(removed.length&&!confirm(`削除する商品が${removed.length}件あります。保存すると商品明細が削除されます。続けますか？`))return;
     edited={...prior,date,merchant,items,receiptTotal:total,
-      reviewStatus:mismatch?'needs_review':editGet('editReview').value,updatedAt:new Date().toISOString()};
+      reviewStatus:mismatch||unresolved?'needs_review':editGet('editReview').value,updatedAt:new Date().toISOString()};
   }catch(e){editStatus(e.message);return;}
   purchaseEditorBusy=true;editGet('editSave').disabled=true;editStatus('保存中です…');
   try{
