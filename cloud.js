@@ -71,6 +71,8 @@ async function sbLoad(){
       id:p.id,bookId:lid,date:new Date(p.purchased_at).toLocaleDateString('sv-SE',{timeZone:'Asia/Tokyo'}),
       merchant:p.store_name||'購入先未設定',source:p.source,createdAt:p.created_at,updatedAt:p.created_at,
       reviewStatus:p.review_status,receiptTotal:p.receipt_total,receiptFingerprint:p.receipt_fingerprint,
+      receiptImagePath:p.receipt_image_path||null,receiptImageUploadedAt:p.receipt_image_uploaded_at||null,
+      receiptImageExpiresAt:p.receipt_image_expires_at||null,receiptOcrText:p.receipt_ocr_text||'',
       items:(byPurchase.get(p.id)||[]).map(i=>{
         const cat=catMap.get(i.category_id),parent=catMap.get(cat?.parent_id);
         return{id:i.id,name:i.name,canonical:i.normalized_name||i.name,amount:Number(i.line_total),qty:Number(i.quantity),
@@ -85,7 +87,7 @@ async function sbLoad(){
     if(window.learningOnCloudLoaded)await window.learningOnCloudLoaded();
     sbStatus('クラウド同期中：'+mapped.length+'件を表示しています。手入力の登録・編集・削除が同期されます。');
   }catch(e){sbStatus('読み込みに失敗：'+e.message);if(!window.cloudMode)sbUi(false);}
-  finally{sbBusy=false;}
+  finally{sbBusy=false;if(window.cloudMode)setTimeout(()=>sbPurgeExpiredReceiptImages().catch(console.warn),1500);}
 }
 async function sbPost(table,data,upsert=false){
   const pref=upsert?'resolution=merge-duplicates,return=representation':'return=representation';
@@ -101,11 +103,81 @@ async function sbCategory(major,minor){
   const root=await ensure(major||'その他',null);
   return ensure(minor||'未分類',root);
 }
+// Private photo storage. Files are never copied to GitHub Pages or public Storage buckets.
+function sbStoragePath(path){return String(path||'').split('/').map(encodeURIComponent).join('/');}
+async function sbUploadReceiptImage(purchaseId,base64){
+  if(!window.cloudMode||!sbSession?.access_token||!sbLedger)throw Error('写真保存にはログインが必要です');
+  if(sbSession.expires_at&&Date.now()/1000>sbSession.expires_at-90)await sbRefresh();
+  if(typeof base64!=='string'||base64.length>6_800_000)throw Error('画像容量が大きすぎます');
+  const bytes=Uint8Array.from(atob(base64),c=>c.charCodeAt(0));
+  if(bytes.byteLength>5*1024*1024)throw Error('5MB以下の写真にしてください');
+  const path=sbSession.user.id+'/'+purchaseId+'-'+crypto.randomUUID()+'.jpg';
+  const res=await fetch(SB_URL+'/storage/v1/object/receipt-images/'+sbStoragePath(path),{
+    method:'POST',headers:{apikey:SB_PUBLISHABLE,Authorization:'Bearer '+sbSession.access_token,'Content-Type':'image/jpeg','x-upsert':'false'},
+    body:new Blob([bytes],{type:'image/jpeg'})});
+  if(!res.ok){const e=await res.json().catch(()=>({}));throw Error('レシート写真の保存に失敗：'+(e.message||e.error||res.status)+ '。Storage設定SQLを確認してください');}
+  const savedAt=new Date();
+  return {receiptImagePath:path,receiptImageUploadedAt:savedAt.toISOString(),receiptImageExpiresAt:new Date(savedAt.getTime()+30*86400000).toISOString()};
+}
+async function sbRemoveReceiptImage(path){
+  if(!path)return;
+  await sbApi('/storage/v1/object/receipt-images',{method:'DELETE',data:{prefixes:[path]}});
+}
+async function sbGetReceiptImageUrl(purchase){
+  if(!purchase?.receiptImagePath)throw Error('保存済みのレシート写真はありません');
+  if(purchase.receiptImageExpiresAt && Date.now()>=Date.parse(purchase.receiptImageExpiresAt))throw Error('写真の保存期限（30日）が過ぎています');
+  if(purchase.receiptImageUploadedAt && Date.now()-Date.parse(purchase.receiptImageUploadedAt)>30*86400000)throw Error('写真の保存期限（30日）が過ぎています');
+  const res=await sbApi('/storage/v1/object/sign/receipt-images/'+sbStoragePath(purchase.receiptImagePath),
+    {method:'POST',data:{expiresIn:600}});
+  const signed=res?.signedURL||res?.signedUrl||res?.signed_url;
+  if(typeof signed!=='string'||!signed)throw Error('写真の閲覧URLを取得できません');
+  if(/^https:\/\//i.test(signed))return signed;
+  return SB_URL+(signed.startsWith('/storage/')?signed:'/storage/v1'+(signed.startsWith('/')?'':'/')+signed);
+}
+async function sbAttachReceiptImage(purchase,base64){
+  if(!window.cloudMode||!sbSession)throw Error('写真の添付にはログインが必要です');
+  const metadata=await sbUploadReceiptImage(purchase.id,base64);
+  try{
+    const result=await sbApi('/rest/v1/purchases?id=eq.'+encodeURIComponent(purchase.id)+'&ledger_id=eq.'+encodeURIComponent(sbLedger),
+      {method:'PATCH',data:{receipt_image_path:metadata.receiptImagePath,
+        receipt_image_uploaded_at:metadata.receiptImageUploadedAt,receipt_image_expires_at:metadata.receiptImageExpiresAt},
+        extraHeaders:{Prefer:'return=representation'}});
+    if(!Array.isArray(result)||result.length!==1)throw Error('購入の更新に失敗しました');
+  }catch(e){await sbRemoveReceiptImage(metadata.receiptImagePath).catch(()=>{});throw e;}
+  if(purchase.receiptImagePath)await sbRemoveReceiptImage(purchase.receiptImagePath).catch(e=>console.warn('Old image cleanup:',e));
+  Object.assign(purchase,metadata);
+  return metadata;
+}
+// Best-effort cleanup on app use. The optional scheduled Edge Function performs unattended cleanup.
+let sbPhotoCleanupRunning=false;
+async function sbPurgeExpiredReceiptImages(){
+  if(sbPhotoCleanupRunning||!window.cloudMode||!sbSession)return;
+  const expired=state.purchases.filter(p=>p.receiptImagePath&&(
+    (p.receiptImageExpiresAt&&Date.now()>=Date.parse(p.receiptImageExpiresAt))||
+    (p.receiptImageUploadedAt&&Date.now()-Date.parse(p.receiptImageUploadedAt)>=30*86400000))).slice(0,30);
+  if(!expired.length)return;
+  sbPhotoCleanupRunning=true;
+  try{for(const p of expired){
+    try{
+      await sbRemoveReceiptImage(p.receiptImagePath);
+      await sbApi('/rest/v1/purchases?id=eq.'+encodeURIComponent(p.id)+'&ledger_id=eq.'+encodeURIComponent(sbLedger),
+        {method:'PATCH',data:{receipt_image_path:null,receipt_image_expires_at:null}});
+      p.receiptImagePath=null;p.receiptImageExpiresAt=null;
+    }catch(e){console.warn('Expired receipt image cleanup will retry',e);}
+  }}finally{sbPhotoCleanupRunning=false;}
+}
+window.sbUploadReceiptImage=sbUploadReceiptImage;
+window.sbRemoveReceiptImage=sbRemoveReceiptImage;
+window.sbGetReceiptImageUrl=sbGetReceiptImageUrl;
+window.sbAttachReceiptImage=sbAttachReceiptImage;
+
 async function sbInsert(p){
   await sbPost('purchases',[{id:p.id,ledger_id:sbLedger,created_by:sbSession.user.id,
     purchased_at:p.date+'T12:00:00+09:00',store_name:p.merchant,source:p.source||'manual',
     receipt_total:p.receiptTotal??p.items.reduce((sum,i)=>sum+Number(i.amount),0),
-    receipt_fingerprint:p.receiptFingerprint||null,review_status:p.reviewStatus||'ok'}]);
+    receipt_fingerprint:p.receiptFingerprint||null,review_status:p.reviewStatus||'ok',
+    receipt_image_path:p.receiptImagePath||null,receipt_image_uploaded_at:p.receiptImageUploadedAt||null,
+    receipt_image_expires_at:p.receiptImageExpiresAt||null,receipt_ocr_text:p.receiptOcrText||null}]);
   try{
     const mapped=[];
     for(const i of p.items){mapped.push({id:i.id,purchase_id:p.id,ledger_id:sbLedger,name:i.name,
@@ -133,9 +205,12 @@ window.cloudSavePurchaseFromForm=async function(){
   sbBusy=false;await sbLoad();
 };
 window.cloudDeletePurchase=async function(id){
+  const oldPhoto=state.purchases.find(p=>p.id===id)?.receiptImagePath;
   if(sbBusy)return toast('同期処理中です。');sbBusy=true;
-  try{await sbApi('/rest/v1/purchases?id=eq.'+encodeURIComponent(id)+'&ledger_id=eq.'+sbLedger,{method:'DELETE'});
-    toast('クラウドから購入を削除しました。');}catch(e){toast('削除失敗：'+e.message);sbBusy=false;return;}
+  try{
+    if(oldPhoto)await sbRemoveReceiptImage(oldPhoto);
+    await sbApi('/rest/v1/purchases?id=eq.'+encodeURIComponent(id)+'&ledger_id=eq.'+sbLedger,{method:'DELETE'});
+    toast('クラウドから購入と保存写真を削除しました。');}catch(e){toast('削除失敗：'+e.message);sbBusy=false;return;}
   sbBusy=false;await sbLoad();
 };
 window.cloudEditItem=async function(pid,iid){

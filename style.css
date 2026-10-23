@@ -83,3 +83,34 @@ button.chart-mode-button.selected{background:#1d6c54;color:#fff;box-shadow:0 1px
 .smart-level{font-size:.87em;color:#40594e}
 .smart-inline-note{padding:8px 10px;border-radius:7px;background:#eef6ef;margin-top:8px;color:#345e46;font-size:.85rem}
 @media(max-width:600px){.smart-preview-input button{width:100%}.smart-preview-input input{flex-basis:100%}}
+/* v1.1: Side-by-side evidence/photo and editable purchase details. */
+.purchase-editor {width:min(1240px,96vw)!important;max-width:96vw!important;max-height:96vh!important;}
+.receipt-editor-layout{display:grid;grid-template-columns:minmax(290px,0.95fr) minmax(330px,1.2fr);gap:18px;align-items:start;max-height:min(77vh,850px);overflow-y:auto;padding:14px!important;}
+.receipt-reference{position:sticky;top:0;min-width:0;border:1px solid #d7e4da;border-radius:12px;padding:12px;background:#f9fbf9;}
+.receipt-reference-header h3{margin:0 0 5px;}.receipt-reference-header small{color:#60736d;}
+.receipt-photo-area{position:relative;margin:10px 0;overflow:auto;max-height:50vh;min-height:155px;border:1px solid #dce6e0;border-radius:8px;background:#fff;text-align:center;}
+.receipt-photo-area img{display:block;height:auto;max-width:none;margin:0 auto;object-fit:contain;}
+.receipt-photo-area img[hidden]{display:none;}
+#editReceiptPhotoMessage{padding:45px 12px;}
+.receipt-photo-tools{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin:9px 0;}
+.receipt-photo-tools button{padding:7px 10px;min-height:36px;}
+.receipt-photo-tools span{font-size:12px;min-width:40px;text-align:center;}
+.receipt-photo-attach{display:block;font-weight:600;font-size:.83rem;line-height:1.5;margin:12px 0;}
+.receipt-photo-attach input{width:100%;margin-top:7px;font-size:.83rem;}
+.receipt-ocr-detail{border-top:1px solid #dce6e0;padding-top:8px;margin-top:10px;}
+.receipt-ocr-detail pre{max-height:240px;overflow:auto;padding:10px;background:#f0f2f1;border-radius:6px;white-space:pre-wrap;overflow-wrap:anywhere;user-select:text;}
+.receipt-editor-form{min-width:0;}
+.receipt-editor-form>.form-grid{margin-top:0;}
+@media(max-width:850px){
+ .purchase-editor{width:100vw!important;max-width:100vw!important;max-height:100dvh!important;height:100dvh!important;margin:0!important;border-radius:0!important;}
+ .receipt-editor-layout{grid-template-columns:1fr;max-height:calc(100dvh - 135px);gap:12px;padding:9px!important;}
+ .receipt-reference{position:relative;top:auto;}
+ .receipt-photo-area{max-height:36vh;min-height:190px;}
+ .receipt-editor-form{min-width:0;}
+ .receipt-photo-tools{gap:5px;}
+}
+
+@media (max-width:850px){
+ .receipt-reference.has-photo{position:sticky;top:0;z-index:4;max-height:38vh;overflow-y:auto;box-shadow:0 4px 12px rgba(20,60,48,.15);}
+ .receipt-reference.has-photo .receipt-photo-area{max-height:22vh;min-height:140px;}
+}

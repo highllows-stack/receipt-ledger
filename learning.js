@@ -11,7 +11,7 @@ const learningKey=name=>String(name||'').normalize('NFKC').toLowerCase()
 function learningValidateCategory(major,minor){return !!(GROUPS[major]&&GROUPS[major].includes(minor))}
 function learningRuleFor(item,originalName=item.name,source='edit'){
   const match_key=learningKey(originalName);
-  if(!match_key||!item?.name||!learningValidateCategory(item.category,item.subcategory))return null;
+  if(!match_key||!item?.name||/^未読み取り[:：]/.test(String(originalName))||!learningValidateCategory(item.category,item.subcategory))return null;
   return{match_key,raw_name:String(originalName).slice(0,300),preferred_name:String(item.name).slice(0,300),
     canonical_name:String(item.canonical||item.name).slice(0,300),major_category:item.category,minor_category:item.subcategory,
     origin:String(item.origin||'').slice(0,200)||null,storage_type:item.state||null,source};

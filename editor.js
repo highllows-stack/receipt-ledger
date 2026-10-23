@@ -233,9 +233,10 @@ window.openPurchaseEditor=function(pid,focusId){
   editTotals();
   const dlg=editGet('purchaseEditor');
   if(!dlg.open)dlg.showModal();
+  window.receiptShowPhotoInEditor?.(p);
   if(focusId){const row=[...editGet('editItems').children].find(r=>r.dataset.id===focusId);row?.querySelector('.e-name')?.focus()}
 };
-function editClose(){if(purchaseEditorBusy)return;editGet('purchaseEditor').close();currentEditPurchase=null;}
+function editClose(){if(purchaseEditorBusy)return;editGet('purchaseEditor').close();currentEditPurchase=null;window.receiptClearPhotoInEditor?.();}
 async function editSave(){
   if(!currentEditPurchase||purchaseEditorBusy)return;
   const prior=currentEditPurchase;
@@ -267,7 +268,7 @@ async function editSave(){
       state.purchases[at]=edited;persist();refresh();
     }
     if(window.learningRememberEdit)await window.learningRememberEdit(prior,edited,editGet('editLearnChanges').checked);
-    editGet('purchaseEditor').close();currentEditPurchase=null;toast('購入明細を保存しました。');
+    editGet('purchaseEditor').close();currentEditPurchase=null;window.receiptClearPhotoInEditor?.();toast('購入明細を保存しました。');
   }catch(e){editStatus('保存できませんでした：'+e.message+'。履歴を再取得して状態を確認してください。');}
   finally{purchaseEditorBusy=false;editGet('editSave').disabled=false;}
 }
@@ -277,6 +278,6 @@ function editInit(){
   editGet('editAdd').addEventListener('click',()=>{if(editGet('editItems').children.length>=100)return editStatus('明細は最大100件です。');editGet('editItems').append(editNewRow({name:'',amount:0,qty:1,unit:'個',category:'その他',subcategory:'未分類'}));editTotals();editGet('editItems').lastElementChild.querySelector('.e-name').focus();});
   editGet('editReceiptTotal').addEventListener('input',editTotals);
   editGet('editSave').addEventListener('click',editSave);
-  editGet('purchaseEditor').addEventListener('cancel',e=>{if(purchaseEditorBusy)e.preventDefault();else currentEditPurchase=null;});
+  editGet('purchaseEditor').addEventListener('cancel',e=>{if(purchaseEditorBusy)e.preventDefault();else {currentEditPurchase=null;window.receiptClearPhotoInEditor?.();}});
 }
 editInit();
