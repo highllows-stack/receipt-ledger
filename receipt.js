@@ -91,8 +91,8 @@ async function receiptScanAll(){
       try{
         const out=await scanOne(file);
         if(out.status==='duplicate'){duplicate++;receiptStates.set(file,'重複のため登録しませんでした');}
-        else if(out.status==='review'){review++;lastReview=out.purchaseId;receiptStates.set(file,`要確認として写真付き保存：${out.parsed.items.length}商品候補 ／ 明細 ${yen(out.parsed.lineSum)} ／ レシート ${out.parsed.total==null?'不明':yen(out.parsed.total)}`);}
-        else{success++;receiptStates.set(file,`照合OK・写真付き登録：${out.parsed.items.length}商品 ／ ${yen(out.parsed.lineSum)}`);}
+        else if(out.status==='review'){review++;lastReview=out.purchaseId;receiptStates.set(file,`要確認として写真付き保存：${out.parsed.items.length}商品候補 ／ ${out.parsed.reconciliation.allocatedTax>0?'税抜'+yen(out.parsed.reconciliation.rawSum)+'＋税'+yen(out.parsed.reconciliation.allocatedTax)+'＝':''}税込明細 ${yen(out.parsed.lineSum)} ／ レシート ${out.parsed.total==null?'不明':yen(out.parsed.total)}${out.parsed.reconciliation.derivedTotal!=null?'（参考計算）':''}`);}
+        else{success++;receiptStates.set(file,`照合OK・写真付き登録：${out.parsed.items.length}商品 ／ ${out.parsed.reconciliation.allocatedTax>0?'消費税'+yen(out.parsed.reconciliation.allocatedTax)+'を自動配分 ／ ':''}税込 ${yen(out.parsed.lineSum)}`);}
       }catch(e){failed++;receiptStates.set(file,'失敗：'+e.message);}
       queueSummary();receiptStatus(`登録${success}件・要確認${review}件・重複${duplicate}件・失敗${failed}件`);
     }
@@ -119,19 +119,22 @@ function receiptAuditHTML(parsed,purchase){
       <div><small>読取商品金額（税抜の可能性）</small><strong>${money(a.rawSum)}</strong></div>
       <div><small>印字された小計</small><strong>${money(a.subtotal)}</strong></div>
       <div><small>印字された消費税</small><strong>${money(a.observedTax)}</strong></div>
+      <div><small>税込合計の判定根拠</small><strong>${esc(a.totalSource||'不明')}</strong></div>
       <div><small>加算した消費税</small><strong>${money(a.allocatedTax)}</strong></div>
       <div><small>税込明細の合計</small><strong>${money(a.itemSum)}</strong></div>
       <div><small>レシート印字の合計</small><strong>${money(a.printedTotal)}</strong></div>
       <div><small>税込明細と印字合計の差</small><strong>${a.printedTotal==null?'不明':money(a.printedTotal-a.itemSum)}</strong></div>
-    </div><p class="audit-note">${esc(description)}。${a.observedTax!=null?'印字された税額 '+money(a.observedTax)+'。':''}</p>
+    </div><p class="audit-note">${esc(description)}。${a.observedTax!=null?'印字された税額 '+money(a.observedTax)+'。':''}${a.taxLegend?' '+esc(a.taxLegend)+'。':''}${a.derivedTotal!=null?' 推定税込合計 '+money(a.derivedTotal)+'（レシート印字合計は未確認）。':''}</p>
     ${changed?`<p class="audit-saved-warning">現在の保存済み明細 ${money(savedSum)} と、新解析 ${money(a.itemSum)} が異なります。**再作成**ボタンで候補を確認後に取り込めます（保存前は履歴に影響しません）。</p>`.replace(/\*\*(.*?)\*\*/g,'<strong>$1</strong>'):''}
     ${details?`<ul class="audit-reasons">${details}</ul>`:''}
-    ${parsed.items.length?`<details class="audit-ignored"><summary>商品ごとの税抜金額・加算税額・税込金額を確認</summary><div class="audit-table-wrap"><table class="audit-table"><thead><tr><th>商品</th><th>数量</th><th>読取額</th><th>加算税</th><th>税込</th></tr></thead><tbody>${parsed.items.map(item=>`<tr><td>${esc(item.name)}</td><td>${item.qty||1}</td><td>${money(item.rawAmount)}</td><td>${money(item.taxAdded||0)}</td><td><strong>${money(item.amount)}</strong></td></tr>`).join('')}</tbody></table></div></details>`:''}
+    ${parsed.items.length?`<details class="audit-ignored"><summary>商品ごとの税抜金額・加算税額・税込金額を確認</summary><div class="audit-table-wrap"><table class="audit-table"><thead><tr><th>商品</th><th>数量</th><th>税率・根拠</th><th>読取額</th><th>加算税</th><th>税込</th></tr></thead><tbody>${parsed.items.map(item=>`<tr><td>${esc(item.name)}</td><td>${item.qty||1}</td><td>${item.taxRateResolved?item.taxRateResolved+'%':'未確定'}<small>${esc(item.taxRateSource||'')}</small></td><td>${money(item.rawAmount)}</td><td>${money(item.taxAdded||0)}</td><td><strong>${money(item.amount)}</strong></td></tr>`).join('')}</tbody></table></div></details>`:''}
     ${excluded?`<details class="audit-ignored"><summary>商品として登録しなかった行を確認（${parsed.ignoredLines.length}行）</summary><ul>${excluded}</ul></details>`:''}`;
 }
 function receiptShowAuditInEditor(p){
   const panel=receiptEl('editReceiptAudit');if(!panel)return;
-  if(receiptIsMaruetsuNetOnly(p)){panel.innerHTML='<h3>レシート金額の照合</h3><div class="audit-status audit-review">税抜小計1,600円のまま登録されています。レシート写真の税込合計は1,728円です。</div><p class="audit-note">下の「印字税額で税込に換算」を使用するか「今回のまるえつレシート」ボタンで128円を明細へ配分してください。</p>';return;}
+  // Prefer generic OCR evidence over a receipt-specific manual rescue path.
+  // If the old OCR text itself was incomplete, offer the verified example fallback.
+  if(receiptIsMaruetsuNetOnly(p)&&!p?.receiptOcrText){panel.innerHTML='<h3>レシート金額の照合</h3><div class="audit-status audit-review">税抜小計1,600円のまま登録されています。保存写真の税込合計は1,728円です。</div><p class="audit-note">今回は写真照合済み修正ボタンでも補正できます。</p>';return;}
   if(!p?.receiptOcrText){panel.innerHTML='<h3>レシート金額の照合</h3><p class="muted">この履歴にOCR原文がありません。レシート写真と明細合計を比較してください。</p>';return;}
   try{panel.innerHTML='<h3>レシート金額の照合</h3>'+receiptAuditHTML(ocrExtractReceipt(p.receiptOcrText),p);}
   catch(e){panel.innerHTML='<h3>レシート金額の照合</h3><p class="muted">再解析できませんでした。写真で内容を確認してください。</p>';console.error(e);}
@@ -222,7 +225,7 @@ function receiptApplyTaxToEditedItems(taxYen,expectedTotalYen,verified=false){
   receiptEl('editPhotoStatus').textContent='税込金額を編集欄へセットしました。「変更を保存」を押すまでは履歴に反映されません。';
   receiptEl('editTaxPrintedTax').value='';
   receiptEl('editTaxPrintedTotal').value='';
-  receiptEl('editTaxToolStatus').textContent=verified?'今回の写真照合済みの税額を反映しました。明細を確認して保存してください。':'金額を税込に按分しました。写真で確認して保存してください。';
+  receiptEl('editTaxToolStatus').textContent=verified?'写真照合済みの税額を反映しました。明細を確認して保存してください。':'金額を税込に按分しました。写真で確認して保存してください。';
   receiptEl('editReceiptRepairExample').hidden=true;
   return true;
 }

@@ -1,5 +1,5 @@
 'use strict';
-// くらしのレシート v1.3: conservative Japanese receipt parsing.
+// くらしのレシート v1.6: OCR evidence-based automatic tax handling.
 // OCR text/layout -> product candidates -> tax treatment -> reconciled VAT-inclusive amounts.
 // Never turn point-card IDs, subtotals, taxes, payment rows or unknown differences into products.
 const OCR_PRICE_END=/(?:[￥¥]\s*)?((?:\d{1,3}(?:,\d{3})+|\d{1,8})(?:\.\d{1,2})?)\s*円?\s*[＊*※]?\s*$/;
@@ -69,10 +69,12 @@ function ocrItemRate(raw){
 function ocrCleanName(raw){return ocrLine(raw).replace(/^(?:\d{3}\s+)(?=[^\d])/,'').trim();}
 function ocrCandidate(raw){
   const original=ocrLine(raw);
-  if(ocrNonItem(original))return null;
   // Some stores print tax status AFTER a line price, e.g. "豆腐 100 (税抜)".
+  // Strip ONLY the trailing tax annotation before rejecting non-items, otherwise
+  // a perfectly valid product would be mistaken for a tax summary row.
   const trailingTax=original.match(/\s*(?:[（(]?\s*(?:税抜|税別|税込|内税|外税|8\s*[%％]|10\s*[%％])\s*[）)]?)\s*$/);
   const s=trailingTax?original.slice(0,-trailingTax[0].length).trim():original;
+  if(ocrNonItem(s))return null;
   const m=s.match(OCR_PRICE_END);
   if(!m||m.index===0)return null;
   const label=s.slice(0,m.index).trim();
@@ -234,13 +236,32 @@ function ocrMerchant(lines){
     !ocrNonItem(s)&&!ocrCandidate(s)&&!/[￥¥]\s*\d+/.test(s)&&
     !/^(?:[\d\-\/. :年月日時分秒]+|ありがとう|いらっしゃい)/.test(s))||'購入先未設定';
 }
+// v1.6: receipt-wide tax evidence. A printed tax legend is an instruction,
+// not a purchased product. Normalization also accepts OCR-inserted spaces.
+function ocrTaxLegend(lines){
+  const all=lines.map(x=>ocrLine(x)).join(' ');
+  const tight=all.replace(/[\s\u3000]/g,'');
+  const direct=/(?:※|＊|\*)印(?:は|が|:|：)?(?:軽減税率|8[%％])|(?:※|＊|\*)[^。]{0,22}軽減税率|軽減税率[^。]{0,22}(?:※|＊|\*)/i.test(tight);
+  return {reducedMark:direct,text:direct?'※印は軽減税率対象を示す（レシート注記）':''};
+}
+function ocrRateEvidence(item,legend,rateBuckets){
+  if(item.taxRate===8||item.taxRate===10)return{rate:item.taxRate,certain:true,reason:'商品行に'+item.taxRate+'%の記載'};
+  if(legend.reducedMark&&item.taxMark)return{rate:8,certain:true,reason:'※印＋軽減税率の注記'};
+  // When * denotes 8%, unmarked lines are NOT assumed 10% without tax-group evidence.
+  if(legend.reducedMark&&!item.taxMark&&rateBuckets?.has(8)&&rateBuckets?.has(10))
+    return {rate:10,certain:true,reason:'※印なし＋8%/10%双方の税区分'};
+  if(rateBuckets?.size===1&&rateBuckets.has(8))
+    return {rate:8,certain:false,reason:'8%の税額記載（商品別は未確定）'};
+  if(rateBuckets?.size===1&&rateBuckets.has(10))
+    return {rate:10,certain:false,reason:'10%の税額記載（商品別は未確定）'};
+  const hint=ocrRateHint(item);
+  return{rate:hint.rate,certain:false,reason:'商品名などからの参考推定'};
+}
 function ocrRateHint(item){
-  if(item.taxRate)return{rate:item.taxRate,reliable:true};
+  if(item.taxRate===8||item.taxRate===10)return{rate:item.taxRate,reliable:true};
   if(item.taxMark&&item.hasReducedMarkLegend)return{rate:8,reliable:true};
-  // A rate inferred from a product name is advisory only: packaging and usage may change taxability.
   const s=item.name;
   if(/(?:ビール|チューハイ|ワイン|日本酒|焼酎|酒類|シャンプー|洗剤|歯ブラシ|ティッシュ|トイレット|化粧|乾電池|電池|文具)/i.test(s))return{rate:10,reliable:false};
-  if(/(?:無洗米|精米|玄米|白米|お米|コシヒカリ|アカフジ|米\s*\d+kg|牛乳|パン|鶏肉|豚肉|卵|野菜|キャベツ|ブロッコリー|惣菜|弁当|飲料|お茶|ジュース|牛肉|納豆|豆腐)/i.test(s))return{rate:8,reliable:false};
   return{rate:8,reliable:false};
 }
 function ocrTaxShares(weights,total){
@@ -254,91 +275,139 @@ function ocrTaxShares(weights,total){
   for(let i=0;i<outstanding;i++)allocation[fractions[i%fractions.length].i]++;
   return allocation;
 }
-function ocrAllocateTax(items,totalTax,taxes=[]){
-  if(!items.length||totalTax<0||!Number.isFinite(totalTax))return[];
-  const taxableIndices=items.map((item,i)=>item.taxKind!=='inclusive'?i:-1).filter(i=>i>=0);
-  if(!taxableIndices.length)return items.map(()=>0);
-  const groups=taxes.filter(t=>t.rate===8||t.rate===10);
-  if(groups.length===2&&groups[0].amount+groups[1].amount===totalTax){
-    // Use the tax amounts printed for each rate, not per-item rounded tax.
-    // The group membership is provisional where the line itself does not specify a rate.
-    const output=items.map(()=>0);let usable=true;
-    for(const group of groups){
-      const indices=taxableIndices.filter(i=>ocrRateHint(items[i]).rate===group.rate);
-      if(!indices.length){usable=false;break;}
-      const shares=ocrTaxShares(indices.map(i=>items[i].rawAmount),group.amount);
-      indices.forEach((index,j)=>{output[index]=shares[j];});
+function ocrTaxDistribution(items,totalTax,taxes,legend){
+  const output=items.map(()=>0),taxBuckets=new Map(taxes.filter(t=>t.rate===8||t.rate===10).map(t=>[t.rate,t.amount]));
+  const evidenced=items.map(item=>ocrRateEvidence(item,legend,taxBuckets));
+  const exclusive=items.map((item,i)=>item.taxKind==='inclusive'?-1:i).filter(x=>x>=0);
+  const eligible=exclusive.filter(i=>items[i].rawAmount>0);
+  if(!eligible.length)return{distribution:output,evidenced,confirmed:false,reason:'すべて税込表示のため税額の加算対象がありません'};
+  const groupedTax=taxBuckets.size>0&&[...taxBuckets.values()].reduce((s,v)=>s+v,0)===totalTax;
+  let groupSupported=false;
+  if(groupedTax){
+    // Tax subtotals prove how much belongs to each rate; allocate only within matched categories.
+    const chosen=eligible.map(i=>evidenced[i].rate);
+    const complete=[...taxBuckets.keys()].every(rate=>chosen.includes(rate))&&chosen.every(rate=>taxBuckets.has(rate));
+    if(complete){
+      for(const[rate,amount]of taxBuckets){
+        const indices=eligible.filter(i=>evidenced[i].rate===rate);
+        const shares=ocrTaxShares(indices.map(i=>items[i].rawAmount),amount);
+        indices.forEach((i,j)=>{output[i]=shares[j]});
+      }
+      groupSupported=true;
     }
-    if(usable)return output;
   }
-  return ocrTaxShares(items.map(i=>i.taxKind==='inclusive'?0:i.rawAmount*ocrRateHint(i).rate),totalTax);
+  if(!groupSupported){
+    // If a rate split is ambiguous, honor the printed total tax but flag every uncertain line.
+    const weights=eligible.map(i=>items[i].rawAmount*evidenced[i].rate);
+    const shares=ocrTaxShares(weights,totalTax);
+    eligible.forEach((i,j)=>{output[i]=shares[j]});
+  }
+  const confirmed=evidenced.every((e,i)=>items[i].taxKind==='inclusive'||e.certain)&&(!taxBuckets.size||groupSupported);
+  return{distribution:output,evidenced,confirmed,reason:groupSupported?'レシートの税率別税額を使用':'印字税額を、推定した税率と商品金額により配分'};
+}
+// Recognize tax amounts even when the OCR splits "8%対象税額" and "¥128"
+// across two lines. ocrFindTaxes remains the authoritative source for amounts.
+function ocrTaxAudit(lines){
+  const tax=ocrFindTaxes(lines),subtotals=ocrFindSubtotals(lines),legend=ocrTaxLegend(lines);
+  const subtotalNet=subtotals.filter(s=>!/(?:税込|内税)/.test(s.compact));
+  const taxTotal=tax.length?tax.reduce((s,v)=>s+v.amount,0):null;
+  return{tax,subtotals,subtotalNet,legend,taxTotal};
 }
 function ocrReconcile(items,allLines,totalInfo){
-  const hasReducedLegend=allLines.some(line=>/(?:※|＊|\*)\s*印.*(?:軽減|8[%％])/.test(ocrLine(line)));
-  items.forEach(i=>{i.hasReducedMarkLegend=hasReducedLegend;});
+  const evidence=ocrTaxAudit(allLines);
+  const{tax,subtotals,legend,taxTotal}=evidence;
+  items.forEach(i=>{i.hasReducedMarkLegend=legend.reducedMark;});
   const printedCount=ocrFindItemCount(allLines);
-  const parsedCount=items.reduce((n,i)=>n+(i.qty||1),0);
-  const rawSum=items.reduce((s,i)=>s+i.rawAmount,0);
-  const total=totalInfo.amount;
-  const taxes=ocrFindTaxes(allLines),subtotals=ocrFindSubtotals(allLines),discounts=ocrFindDiscounts(allLines);
-  const observedTax=taxes.length?taxes.reduce((s,v)=>s+v.amount,0):null;
-  const tolerance=1; // 1 yen for OCR+receipt-specific rounding; larger discrepancies are never silently cleared.
-  const subtotalMatch=subtotals.some(x=>Math.abs(x.amount-rawSum)<=tolerance);
-  const explicitNet=items.some(x=>x.taxKind==='exclusive')||subtotals.some(x=>/税抜|税別|本体/.test(x.compact))||taxes.some(x=>x.kind==='exclusive');
-  const explicitGross=items.some(x=>x.taxKind==='inclusive')||subtotals.some(x=>/税込/.test(x.compact))||taxes.some(x=>x.kind==='inclusive');
-  const result={mode:'unknown',status:'review',printedTotal:total,subtotal:subtotals.at(-1)?.amount??null,rawSum,itemSum:rawSum,observedTax,
-    allocatedTax:0,difference:total===null?null:total-rawSum,hasDiscounts:discounts.length>0,discountLines:discounts,
-    explanations:[],taxLines:taxes.map(v=>v.line),ignoredCount:0,printedCount,parsedCount};
-  if(!items.length){result.explanations.push('商品行を読み取れませんでした。写真を見ながら明細を入力してください。');return result;}
-  const diff=total===null?null:total-rawSum;
-  if(total!==null&&Math.abs(diff)<=tolerance){
-    result.mode='inclusive';result.status=Math.abs(diff)<=0.01&&!explicitNet?'match':'review';
-    result.explanations.push('商品金額は税込として扱います。レシート合計との比較で二重課税を防ぎます。');
-    if(Math.abs(diff)>0.01)result.explanations.push('合計に1円の差があります。端数処理や読み取りを確認してください。');
-    if(explicitNet)result.explanations.push('税抜を示す表記もあります。表示の解釈を写真で確認してください。');
-  }else if(total!==null&&diff>0){
-    const taxProof=observedTax!==null&&Math.abs(observedTax-diff)<=tolerance;
-    const taxLike=rawSum>0&&diff/rawSum>=.065&&diff/rawSum<=.115;
-    const supported=!(explicitGross&&!explicitNet)&&(taxProof||(taxLike&&(explicitNet||subtotalMatch)&&!explicitGross));
-    if(supported&&Math.abs(diff-Math.round(diff))<.01){
-      result.mode='exclusive';result.allocatedTax=diff;
-      const distribution=ocrAllocateTax(items,diff,taxes);
-      items.forEach((item,i)=>{item.taxAdded=distribution[i];item.amount=item.rawAmount+distribution[i];});
-      result.itemSum=items.reduce((a,b)=>a+b.amount,0);
-      result.difference=total-result.itemSum;
-      const allKnown=items.length===1||items.every(i=>ocrRateHint(i).reliable);
-      result.status=taxProof&&allKnown&&subtotalMatch?'match':'review';
-      result.explanations.push('税抜金額と判断し、レシート上の合計と一致するよう消費税 '+diff+'円を明細に配分しました。');
-      if(!taxProof)result.explanations.push('税額の直接照合ができないため、税込換算は仮計算です。写真で確認してください。');
-      if(!allKnown&&items.length>1)result.explanations.push('各商品の税率が特定できないため、税額の配分比率は推定です。商品別税込価格を確認してください。');
-    }else{
-      result.mode='unreconciled';result.explanations.push('明細の金額とレシート合計が一致しません。商品・値引き・税額の読み落としを写真で確認してください。');
+  const parsedCount=items.reduce((s,i)=>s+(i.qty||1),0);
+  const rawSum=items.reduce((s,i)=>s+Number(i.rawAmount||0),0);
+  const subtotalMatch=subtotals.some(x=>Math.abs(x.amount-rawSum)<=1);
+  const printedTotal=totalInfo.amount;
+  const discounts=ocrFindDiscounts(allLines);
+  const allMarked=legend.reducedMark&&items.length>0&&items.every(i=>i.taxMark||i.taxRate===8);
+  const explicitNet=items.some(i=>i.taxKind==='exclusive')||subtotals.some(i=>/税抜|税別|本体/.test(i.compact))||tax.some(i=>i.kind==='exclusive');
+  const explicitGross=items.some(i=>i.taxKind==='inclusive')||subtotals.some(i=>/税込/.test(i.compact))||tax.some(i=>i.kind==='inclusive');
+  const markInfo=items.filter(i=>i.taxMark).length;
+  const r={mode:'unknown',status:'review',printedTotal,derivedTotal:null,effectiveTotal:printedTotal,totalSource:printedTotal!=null?'印字合計':'不明',subtotal:subtotals.find(x=>Math.abs(x.amount-rawSum)<=1)?.amount??subtotals.at(-1)?.amount??null,
+    rawSum,itemSum:rawSum,observedTax:taxTotal,allocatedTax:0,difference:printedTotal==null?null:printedTotal-rawSum,
+    hasDiscounts:discounts.length>0,discountLines:discounts,explanations:[],taxLines:tax.map(x=>x.line),taxLegend:legend.text,
+    markedItems:markInfo,rateBreakdown:[],ignoredCount:0,printedCount,parsedCount};
+  const warn=x=>{if(!r.explanations.includes(x))r.explanations.push(x)};
+  if(!items.length){warn('商品明細を抽出できませんでした。写真を確認してください。');return r;}
+  if(legend.reducedMark)warn('※印は軽減税率対象という注記を検出しました。対象の商品行には8%を使用します。');
+  // If OCR could not recover the printed total, a validated net subtotal + printed
+  // tax can be used as a PROVISIONAL effective total; never call it printed.
+  if(printedTotal==null&&subtotalMatch&&taxTotal!==null&&!explicitGross&&discounts.length===0){
+    r.derivedTotal=rawSum+taxTotal;r.effectiveTotal=r.derivedTotal;r.totalSource='税抜小計＋印字税額から計算（印字合計未検出）';
+    warn('合計の印字はOCRで検出できませんでした。税抜小計と印字税額による参考税込額です。写真で合計を確認してください。');
+  }else if(printedTotal==null&&subtotalMatch&&allMarked&&!explicitGross&&discounts.length===0){
+    const estimate=Math.floor(rawSum*.08);
+    if(estimate>0){r.derivedTotal=rawSum+estimate;r.effectiveTotal=r.derivedTotal;r.totalSource='※印と8%から参考計算（印字税額・合計未検出）';
+      warn('税額・合計の印字を検出できなかったため、※印に基づき8%を参考計算しました。写真で税額を確認してください。');}
+  }
+  const target=r.effectiveTotal;
+  const rawDiff=target==null?null:target-rawSum;
+  const taxProof=taxTotal!=null&&rawDiff!=null&&Math.abs(taxTotal-rawDiff)<=1;
+  const markProof=allMarked&&rawDiff!=null&&Math.abs(rawDiff-Math.floor(rawSum*.08))<=1;
+  const taxLike=rawDiff!=null&&rawSum>0&&rawDiff/rawSum>=.065&&rawDiff/rawSum<=.115;
+  const subtotalProof=subtotalMatch||explicitNet;
+  // Inclusive receipt: NEVER add the same printed tax again.
+  if(target!=null&&Math.abs(rawDiff)<=1){
+    r.mode='inclusive';r.status=printedTotal!=null&&Math.abs(rawDiff)<.01&&!explicitNet?'match':'review';
+    if(explicitNet)warn('明細と税込合計がすでに一致していますが、税抜を示す記載もあります。二重課税を避けました。');
+    else warn('商品金額は印字合計と一致しています。税を二重加算しません。');
+    if(Math.abs(rawDiff)>.01)warn('1円の差があります。端数処理を確認してください。');
+  }else if(target!=null&&rawDiff>0&&!explicitGross&&discounts.length===0&&
+    ((taxProof&&(subtotalProof||markProof))||(markProof&&subtotalProof)||((explicitNet||subtotalMatch)&&taxLike))){
+    r.mode=printedTotal==null?'exclusive-estimated':'exclusive';
+    const split=ocrTaxDistribution(items,rawDiff,tax,legend);
+    for(let i=0;i<items.length;i++){
+      items[i].taxAdded=split.distribution[i];items[i].amount=items[i].rawAmount+split.distribution[i];
+      items[i].taxRateResolved=split.evidenced[i].rate;
+      items[i].taxRateSource=split.evidenced[i].reason;
+      items[i].taxRateConfirmed=split.evidenced[i].certain;
     }
-  }else if(total!==null){result.mode='unreconciled';result.explanations.push('明細合計がレシート合計を上回っています。商品行の重複や値引きの計上を確認してください。');}
-  else if(total===null&&observedTax!==null&&subtotalMatch&&(!explicitGross||explicitNet)){
-    // The printed total is unreadable, but a printed net subtotal AND a printed tax
-    // independently corroborate a tax-exclusive calculation. Never call this 'match'.
-    result.mode='exclusive-estimated';result.allocatedTax=observedTax;
-    const distribution=ocrAllocateTax(items,observedTax,taxes);
-    items.forEach((item,i)=>{item.taxAdded=distribution[i];item.amount=item.rawAmount+distribution[i];});
-    result.itemSum=items.reduce((v,i)=>v+i.amount,0);
-    result.explanations.push('印字された小計'+rawSum+'円と消費税'+observedTax+'円から税込'+result.itemSum+'円を計算しました。印字された合計金額は読み取れていないため、写真で確認してください。');
+    r.allocatedTax=rawDiff;r.itemSum=items.reduce((s,i)=>s+i.amount,0);
+    r.difference=target-r.itemSum;r.rateBreakdown=[...new Map(split.evidenced.map(x=>[x.rate,x])).values()].map(x=>({rate:x.rate,reason:x.reason}));
+    // A definitive match requires printed total, exact printed tax, matching subtotal,
+    // complete counts (when printed) and product-rate evidence.
+    const countConfirmed=printedCount==null||printedCount===parsedCount;
+    r.status=printedTotal!=null&&taxProof&&subtotalMatch&&countConfirmed&&split.confirmed&&Math.abs(r.difference)<.01?'match':'review';
+    warn(`税抜明細${rawSum}円に消費税${rawDiff}円を自動配分し、税込${r.itemSum}円に換算しました。`);
+    warn('税率の根拠：'+split.reason+'。');
+    if(!taxProof)warn('印字税額との一致を確認できません。税込配分は暫定値です。');
+    if(!split.confirmed)warn('商品ごとの税率が確定できないため、配分は参考値です。写真を確認してください。');
+  }else if(target!=null&&rawDiff<0){
+    r.mode='unreconciled';warn('明細合計がレシート合計より大きいです。重複・値引き・OCR誤りを確認してください。');
+  }else if(target!=null){
+    r.mode='unreconciled';warn('税額・値引き・商品行を根拠なく補正しません。税込合計との差を確認してください。');
   }else if(explicitNet&&!explicitGross){
-    result.mode='exclusive-estimated';const taxesEstimated=items.map(i=>Math.floor(i.rawAmount*ocrRateHint(i).rate/100));
-    items.forEach((i,k)=>{i.taxAdded=taxesEstimated[k];i.amount=i.rawAmount+taxesEstimated[k]});
-    result.itemSum=items.reduce((s,i)=>s+i.amount,0);result.allocatedTax=result.itemSum-rawSum;
-    result.explanations.push('レシート合計が不明です。明示された税抜表記から参考税込額を算出しました。税率・端数処理の確認が必要です。');
-  }else if(total===null){result.explanations.push('レシート合計が判別できません。明細と写真を照合してください。');}
-  if(subtotals.length&&!subtotalMatch&&!(total!==null&&Math.abs(rawSum-total)<=1)){
-    result.status='review';result.explanations.push('読み取った小計と商品明細の金額にも差があります。');
-  }
-  if(printedCount!==null&&parsedCount!==printedCount){result.status='review';result.explanations.push(`レシートは${printedCount}点ですが、抽出結果は${parsedCount}点です。明細の読み落としや数量を確認してください。`);}
-  if(discounts.length){
-    result.status='review';result.explanations.push('値引き・ポイント関連の行があります。支払手段のポイント利用と値引きは別なので、内容を確認してください。');
-  }
-  if(explicitNet&&explicitGross){result.status='review';result.explanations.push('税込・税抜の表示が混在しています。商品別の税の扱いを確認してください。');}
-  if(!items.length)result.status='review';
-  return result;
+    // Only when the receipt explicitly marks exclusive prices; do not silently
+    // fabricate "printed" tax or receipt totals.
+    r.mode='exclusive-estimated';
+    const hints=items.map(i=>ocrRateEvidence(i,legend,new Map()));
+    const grouped=new Map();
+    for(let i=0;i<items.length;i++){
+      if(items[i].taxKind==='inclusive')continue;
+      const rate=hints[i].rate,indices=grouped.get(rate)||[];indices.push(i);grouped.set(rate,indices);
+    }
+    let estimate=0;const added=items.map(()=>0);
+    for(const [rate,indices] of grouped){
+      const subtotal=indices.reduce((v,i)=>v+items[i].rawAmount,0);
+      const groupTax=Math.floor(subtotal*rate/100);
+      const shares=ocrTaxShares(indices.map(i=>items[i].rawAmount),groupTax);
+      indices.forEach((i,k)=>added[i]=shares[k]);estimate+=groupTax;
+    }
+    items.forEach((i,k)=>{i.taxAdded=added[k];i.amount=i.rawAmount+added[k];
+      i.taxRateResolved=hints[k].rate;i.taxRateSource=hints[k].reason;i.taxRateConfirmed=hints[k].certain;});
+    r.allocatedTax=estimate;r.itemSum=rawSum+estimate;
+    warn('税抜を示す記載がありますが、印字合計が確認できません。推定税率で参考税込額を計算したため、写真で確認してください。');
+  }else warn('税込・税抜を確定できず、自動で税を加算しませんでした。写真で確認してください。');
+  if(printedCount!=null&&printedCount!==parsedCount){r.status='review';warn(`レシートは${printedCount}点、抽出結果は${parsedCount}点です。商品数量を確認してください。`);}
+  if(subtotals.length&&!subtotalMatch&&!(printedTotal!=null&&Math.abs(rawSum-printedTotal)<=1)){
+    r.status='review';warn('商品金額と印字小計が一致しません。読み落とし・OCR誤りを確認してください。');}
+  if(discounts.length){r.status='review';warn('値引き・割引を検出しました。ポイント支払いとの違いを確認してください。');}
+  if(explicitNet&&explicitGross){r.status='review';warn('税込・税抜の表記が混在しています。二重課税を避けるため写真で確認してください。');}
+  return r;
 }
 function ocrExtractReceipt(raw,layoutLines=[]){
   const textLines=String(raw||'').normalize('NFKC').replace(/[\r\u0000]/g,'').split('\n').map(ocrLine).filter(Boolean);
@@ -349,7 +418,7 @@ function ocrExtractReceipt(raw,layoutLines=[]){
   if(geoLines.length)sources.push({label:'文字の位置情報',lines:geoLines,parsed:ocrParseItemLines(geoLines)});
   const assessments=sources.map(src=>{
     const items=src.parsed.items.map(i=>({...i}));
-    const rec=ocrReconcile(items,textLines.length?textLines:src.lines,{...totalInfo,amount:total});
+    const rec=ocrReconcile(items,[...textLines,...(src.label==='文字の位置情報'?geoLines:[])],{...totalInfo,amount:total});
     const delta=rec.difference===null?999999:Math.abs(rec.difference);
     const exact=rec.status==='match'&&delta===0;
     // More lines alone is not quality: strong preference for complete, reconciled receipts.
@@ -366,7 +435,7 @@ function ocrExtractReceipt(raw,layoutLines=[]){
   if(selected.items.length>=100)warnings.push('明細が100行を超えた可能性があります');
   const date=ocrFindDate(textLines)||ocrFindDate(geoLines);
   if(!date)warnings.push('購入日が判別できませんでした');
-  return{merchant:ocrMerchant(textLines.length?textLines:geoLines),date,total:rec.printedTotal,items:selected.items,warnings,
+  return{merchant:ocrMerchant(textLines.length?textLines:geoLines),date,total:rec.effectiveTotal,items:selected.items,warnings,
     rawLineCount:textLines.length,parsedSource:selected.src.label,lineSum:rec.itemSum,ignoredLines:selected.src.parsed.ignored.slice(0,60),
     reconciliation:rec};
 }
