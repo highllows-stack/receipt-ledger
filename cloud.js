@@ -134,6 +134,17 @@ async function sbGetReceiptImageUrl(purchase){
   if(/^https:\/\//i.test(signed))return signed;
   return SB_URL+(signed.startsWith('/storage/')?signed:'/storage/v1'+(signed.startsWith('/')?'':'/')+signed);
 }
+// Private authenticated photo download for 90-degree rotation and optional OCR rerun.
+async function sbDownloadReceiptImage(purchase){
+  if(!window.cloudMode||!sbSession?.access_token||!purchase?.receiptImagePath)throw Error('写真の読み込みにはログインが必要です');
+  if(purchase.receiptImageExpiresAt&&Date.now()>=Date.parse(purchase.receiptImageExpiresAt))throw Error('写真は保存期限を過ぎています');
+  if(sbSession.expires_at&&Date.now()/1000>sbSession.expires_at-90)await sbRefresh();
+  const res=await fetch(SB_URL+'/storage/v1/object/authenticated/receipt-images/'+sbStoragePath(purchase.receiptImagePath),{
+    headers:{apikey:SB_PUBLISHABLE,Authorization:'Bearer '+sbSession.access_token}
+  });
+  if(!res.ok)throw Error('写真の取得に失敗しました（HTTP '+res.status+'）。Storageのアクセス権を確認してください');
+  return res.blob();
+}
 async function sbAttachReceiptImage(purchase,base64){
   if(!window.cloudMode||!sbSession)throw Error('写真の添付にはログインが必要です');
   const metadata=await sbUploadReceiptImage(purchase.id,base64);
@@ -169,6 +180,7 @@ async function sbPurgeExpiredReceiptImages(){
 window.sbUploadReceiptImage=sbUploadReceiptImage;
 window.sbRemoveReceiptImage=sbRemoveReceiptImage;
 window.sbGetReceiptImageUrl=sbGetReceiptImageUrl;
+window.sbDownloadReceiptImage=sbDownloadReceiptImage;
 window.sbAttachReceiptImage=sbAttachReceiptImage;
 
 async function sbInsert(p){
@@ -262,7 +274,8 @@ window.cloudSaveEditedPurchase=async function(original,edited){
     const changedPurchase=await sbApi('/rest/v1/purchases?id=eq.'+encodeURIComponent(edited.id)+
       '&ledger_id=eq.'+encodeURIComponent(sbLedger),{method:'PATCH',data:{
         purchased_at:edited.date+'T12:00:00+09:00',store_name:edited.merchant,
-        receipt_total:edited.receiptTotal,review_status:edited.reviewStatus},extraHeaders:{Prefer:'return=representation'}});
+        receipt_total:edited.receiptTotal,review_status:edited.reviewStatus,
+        receipt_ocr_text:edited.receiptOcrText||null},extraHeaders:{Prefer:'return=representation'}});
     if(!Array.isArray(changedPurchase)||changedPurchase.length!==1)throw Error('購入の更新権限を確認してください。');
     for(const old of original.items){
       if(retained.has(old.id))continue;

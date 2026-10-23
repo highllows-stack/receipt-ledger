@@ -1,5 +1,5 @@
 'use strict';
-// くらしのレシート v1.2: conservative Japanese receipt parsing.
+// くらしのレシート v1.3: conservative Japanese receipt parsing.
 // OCR text/layout -> product candidates -> tax treatment -> reconciled VAT-inclusive amounts.
 // Never turn point-card IDs, subtotals, taxes, payment rows or unknown differences into products.
 const OCR_PRICE_END=/(?:[￥¥]\s*)?((?:\d{1,3}(?:,\d{3})+|\d{1,8})(?:\.\d{1,2})?)\s*円?\s*[＊*※]?\s*$/;
@@ -11,8 +11,8 @@ function ocrCompact(s){return ocrLine(s).replace(/\s+/g,'').replace(/^[＊*※#]
 function ocrRedactPrivateText(raw){
   return String(raw||'').split(/\r?\n/).map(line=>{
     const compact=ocrCompact(line);
-    if(/(?:ポイントカード|会員番号|会員コード|カード番号|カードNo|カードID|メンバー番号|顧客番号|お客様番号)/i.test(compact)){
-      return line.replace(/[0-9０-９][0-9０-９\s\-ー]{5,}/g,'[番号非表示]');
+    if(/(?:ポイントカード|WAON\s*POINT|POINT\s*番号|ポイント番号|会員番号|会員コード|カード番号|カードNo|カードID|メンバー番号|顧客番号|お客様番号)/i.test(compact)){
+      return line.replace(/[0-9０-９*＊][0-9０-９*＊\s\-ー]{4,}/g,'[番号非表示]');
     }
     if(/^[\s\d０-９-]{12,}$/.test(line))return'[長い番号を非表示]';
     return line;
@@ -20,9 +20,24 @@ function ocrRedactPrivateText(raw){
 }
 function ocrMoney(s){const t=String(s??'').replace(/[￥¥円,，\s]/g,'');return /^(?:\d{1,9})(?:\.\d{1,2})?$/.test(t)?Number(t):NaN;}
 function ocrLastMoney(raw){const s=ocrLine(raw),m=s.match(OCR_PRICE_END);return m?ocrMoney(m[1]):null;}
+function ocrIsSummaryStart(raw){
+  const s=ocrCompact(raw).replace(/^[\(（]+/, '');
+  return /^(?:小計|商品小計|商品合計|税抜小計|税込小計|税別小計|本体合計|総合計|お買上合計|合計)(?:$|[\d￥¥円(（:：])/i.test(s);
+}
+function ocrIsReceiptMetadata(raw){
+  const t=ocrLine(raw),s=ocrCompact(raw);
+  // Reject label+numbers on the SAME OCR line, not just label-only prefixes.
+  if(/(?:レジ\s*(?:No|番号|#|:)|店\s*[:：]\s*\d|店番号|店舗番号|登録番号|インボイス|領収証|\bT\d{13}\b|レシート\s*No)/i.test(t))return true;
+  if(/(?:WAON|nanaco|WAONPOINT|POINT番号|ポイント番号|ポイントカード|会員番号|カード番号|お客様番号|顧客番号|獲得ポイント|累計ポイント|残高|ポイント対象額|今回ポイント|通常ポイント|利用ポイント)/i.test(s))return true;
+  if(/(?:^|\s)(?:0\d{1,4}[-ー－]\d{1,4}[-ー－]\d{3,4})(?:$|\s)/.test(t))return true;
+  if(/(?:\d{1,5}\s*(?:点|品|個)\s*[￥¥]?\s*[\d,]+\s*(?:円)?$)/.test(s)&&!/[×xX*]/.test(s))return true;
+  if(/^\d{8,}[A-Z]?$/i.test(s))return true;
+  if(/[〇0-9*＊]{3,}\d{4,}$/.test(s)&&/(?:番号|NO|POINT)/i.test(s))return true;
+  return false;
+}
 function ocrNonItem(raw){
   const s=ocrCompact(raw),t=ocrLine(raw);
-  if(!s||OCR_META_PREFIX.test(s)||OCR_SUMMARY_PREFIX.test(s))return true;
+  if(!s||ocrIsReceiptMetadata(raw)||OCR_META_PREFIX.test(s)||OCR_SUMMARY_PREFIX.test(s))return true;
   if(/^(?:[%％]?\d{1,2}[%％]?対象|[\d.,￥¥円\s*※-]+)$/.test(s))return true;
   if(/(?:消費税|内税|外税|税額|税率|小計|合計|お預|お釣|お支払|クレジット|ポイント|クーポン|値引|割引|残高|請求金額|課税|対象額|対象商品|カード番号|会員番号|カードNo|会員No|取引No|精算|登録番号|インボイス)/i.test(s))return true;
   if(/^(?:20\d{2}[/.年-]|\d{1,2}:\d{2}(?::\d{2})?$)/.test(s))return true;
@@ -51,6 +66,7 @@ function ocrItemRate(raw){
   if(/10\s*[%％]/.test(s))return 10;
   return null;
 }
+function ocrCleanName(raw){return ocrLine(raw).replace(/^(?:\d{3}\s+)(?=[^\d])/,'').trim();}
 function ocrCandidate(raw){
   const original=ocrLine(raw);
   if(ocrNonItem(original))return null;
@@ -60,36 +76,66 @@ function ocrCandidate(raw){
   const m=s.match(OCR_PRICE_END);
   if(!m||m.index===0)return null;
   const label=s.slice(0,m.index).trim();
+  if(ocrIsReceiptMetadata(label))return null;
   const amount=ocrMoney(m[1]);
   if(!Number.isFinite(amount)||amount<=0||amount>999999)return null;
   const taxKind=ocrTaxKind(original),rate=ocrItemRate(original);
   let name=label.replace(/(?:\s*\(?\s*(?:税抜|税別|税込|内税|外税|8\s*[%％]|10\s*[%％]|軽減税率)\s*\)?\s*)+$/g,'').trim();
   name=name.replace(/\s*(?:(?:\d+\s*(?:点|個|コ|袋|本)\s*[×xX*]\s*\d+(?:\.\d+)?)|(?:[×xX]\s*\d+))\s*$/,'').trim();
-  name=name.replace(/^(?:\d{8,14}\s+)/,'').replace(/^[＊*※\s]+/,'').trim();
+  name=name.replace(/^(?:\d{8,14}\s+)/,'').replace(/^(?:\d{3}\s+)(?=[^\d])/,'').replace(/^[＊*※\s]+/,'').trim();
+  name=ocrCleanName(name);
   if(!ocrValidName(name))return null;
-  return{name,amount,rawAmount:amount,rawLine:s,taxKind,taxRate:rate,taxMark:/^[※＊*]|[※＊*]\s*$/.test(s)};
+  return{name,amount,rawAmount:amount,rawLine:s,taxKind,taxRate:rate,taxMark:/^[※＊*]|[※＊*]\s*$/.test(s),qty:1,unit:'個'};
+}
+// Parse price-per-piece annotations attached to the preceding purchased line.
+// 625 キャベツガリバタ 447※ / (@149 × 3(個)) => one line, qty 3, total 447.
+function ocrQuantityNote(raw,expectedAmount){
+  const s=ocrLine(raw).replace(/[（）]/g,c=>c==='（'?'(':')');
+  if(!/^\(?\s*(?:@|＠|\d+\s*[￥¥円]?\s*[×xX*])/i.test(s))return null;
+  const m=s.match(/(?:[@＠]\s*[￥¥]?\s*(\d[\d,]*)\s*[円]?)\s*[×xX*]\s*(\d{1,3})(?:\s*\(?\s*(個|点|本|袋|枚|パック)\s*\)?)?/i)
+       ||s.match(/(?:\d{1,3}\s*[×xX*]\s*[￥¥]?\s*\d[\d,]*)/i);
+  if(!m||!m[1]||!m[2])return null;
+  const unitPrice=ocrMoney(m[1]),qty=Number(m[2]);
+  if(!Number.isInteger(qty)||qty<2||qty>100||!Number.isFinite(unitPrice))return null;
+  if(Math.abs(unitPrice*qty-expectedAmount)>.01)return{qty:null,mismatch:true,price:unitPrice};
+  return{qty,unit:m[3]||'個',price:unitPrice};
 }
 function ocrParseItemLines(lines){
   const input=lines.map(x=>ocrLine(typeof x==='string'?x:x?.text)).filter(Boolean);
-  const items=[],ignored=[];
+  const items=[],ignored=[],notes=[];
+  // Strictly stop treating any later lines as merchandise once the checkout
+  // summary begins. This rejects point balances, cashier IDs and payment rows.
+  let summaryStarted=false;
   for(let i=0;i<input.length;i++){
     const s=input[i];
+    if(ocrIsSummaryStart(s))summaryStarted=true;
+    if(summaryStarted){ignored.push(s);continue;}
     if(ocrNonItem(s)){ignored.push(s);continue;}
     let item=ocrCandidate(s);
     if(!item&&ocrValidName(s)&&i+1<input.length){
       const next=input[i+1];const m=next.match(OCR_ONLY_PRICE);
       if(m){const amount=ocrMoney(m[1]);if(Number.isFinite(amount)&&amount>0&&amount<=999999){
-        item={name:s,amount,rawAmount:amount,rawLine:s+' / '+next,taxKind:ocrTaxKind(s),taxRate:ocrItemRate(s),taxMark:/^[※＊*]|[※＊*]\s*$/.test(s)};i++;
+        item={name:ocrCleanName(s),amount,rawAmount:amount,rawLine:s+' / '+next,taxKind:ocrTaxKind(s),taxRate:ocrItemRate(s),taxMark:/^[※＊*]|[※＊*]\s*$/.test(next),qty:1,unit:'個'};i++;
       }}else if(i+2<input.length&&/^(?:\d+\s*(?:点|個)|[×xX*]\s*\d+|\d+\s*[×xX*]\s*\d+)$/i.test(next)){
         const price=input[i+2].match(OCR_ONLY_PRICE);
         if(price){const amount=ocrMoney(price[1]);if(Number.isFinite(amount)&&amount>0&&amount<=999999){
-          item={name:s,amount,rawAmount:amount,rawLine:s+' / '+next+' / '+input[i+2],taxKind:ocrTaxKind(s),taxRate:ocrItemRate(s),taxMark:/^[※＊*]|[※＊*]\s*$/.test(s)};i+=2;
+          item={name:ocrCleanName(s),amount,rawAmount:amount,rawLine:s+' / '+next+' / '+input[i+2],taxKind:ocrTaxKind(s),taxRate:ocrItemRate(s),taxMark:/^[※＊*]|[※＊*]\s*$/.test(input[i+2]),qty:1,unit:'個'};i+=2;
         }}
       }
     }
-    if(item)items.push(item);else ignored.push(s);
+    if(item){
+      if(i+1<input.length){
+        const note=ocrQuantityNote(input[i+1],item.rawAmount);
+        if(note){
+          if(note.qty){item.qty=note.qty;item.unit=note.unit;item.perUnitPrice=note.price;}
+          else if(note.mismatch)notes.push('数量行の掛け算と商品金額が一致しません：'+input[i+1]);
+          ignored.push(input[i+1]);i++;
+        }
+      }
+      items.push(item);
+    }else ignored.push(s);
   }
-  return{items:items.slice(0,100),ignored};
+  return{items:items.slice(0,100),ignored,notes};
 }
 function ocrFindDate(lines){
   const s=lines.join(' ');
@@ -118,18 +164,37 @@ function ocrFindTotal(lines){
   candidates.sort((a,b)=>b.score-a.score||b.index-a.index);
   return{amount:candidates[0].amount,source:candidates[0].line,candidates};
 }
+function ocrNearbyMoney(lines,index){
+  const onLine=ocrLastMoney(lines[index]);
+  if(Number.isFinite(onLine))return onLine;
+  for(let j=index+1;j<=Math.min(lines.length-1,index+3);j++){
+    const s=ocrLine(lines[j]);
+    if(ocrIsSummaryStart(s)||/^(?:8|10)\s*[%％].*(?:税額|対象)|^お?預|^お?釣|^ポイント/i.test(ocrCompact(s)))break;
+    if(OCR_ONLY_PRICE.test(s))return ocrMoney(s.match(OCR_ONLY_PRICE)[1]);
+    if(/^(?:\d+\s*(?:点|品|個))$/.test(s))continue;
+    break;
+  }
+  return null;
+}
 function ocrFindSubtotals(lines){
-  return lines.map((line,index)=>({line:ocrLine(line),compact:ocrSummaryLabel(line),index,amount:ocrLastMoney(line)}))
-    .filter(x=>/^(?:税抜小計|税別小計|税込小計|本体価格計|小計|商品小計|商品合計|税抜合計|本体合計|税別合計)/.test(x.compact)&&Number.isFinite(x.amount));
+  const out=[];
+  for(let i=0;i<lines.length;i++){
+    const s=ocrSummaryLabel(lines[i]).replace(/^[（(]/,'');
+    if(!/^(?:税抜小計|税別小計|税込小計|本体価格計|小計|商品小計|商品合計|税抜合計|本体合計|税別合計|\d{1,2}[%％](?:外税|内税|税抜|税込)?対象額)/.test(s))continue;
+    const amount=ocrNearbyMoney(lines,i);
+    if(Number.isFinite(amount))out.push({line:ocrLine(lines[i]),compact:s,index:i,amount});
+  }
+  return out;
 }
 function ocrFindTaxes(lines){
   const result=[];
-  for(const raw of lines){
-    const s=ocrSummaryLabel(raw);
-    if(/^(?:税抜|税別|税込)?(?:対象|合計|小計)|(?:対象額|税抜対象|税込対象|課税対象|非課税|税率のみ)/.test(s)&&!/消費税|税額/.test(s))continue;
+  for(let i=0;i<lines.length;i++){
+    const raw=lines[i],s=ocrSummaryLabel(raw).replace(/^[（(]/,'');
+    if(/対象額|対象商品|課税対象|非課税対象/.test(s)&&!/税額|消費税/.test(s))continue;
     if(!/(?:消費税|税額|内税|外税)/.test(s))continue;
     if(/^(?:商品|小計|合計)/.test(s))continue;
-    const amount=ocrLastMoney(raw);if(!Number.isFinite(amount)||amount<0||amount>999999)continue;
+    const amount=ocrNearbyMoney(lines,i);
+    if(!Number.isFinite(amount)||amount<0||amount>999999)continue;
     const rate=(s.match(/(?:^|[^0-9])(8|10)\s*[%％]/)||[])[1];
     const general=/^(?:消費税合計|消費税額合計|税額合計|合計税額|うち消費税|内消費税合計)/.test(s);
     result.push({rate:rate?Number(rate):null,amount,kind:ocrTaxKind(s),general,line:ocrLine(raw)});
@@ -141,6 +206,16 @@ function ocrFindTaxes(lines){
   }
   return result.length?[result.at(-1)]:[];
 }
+function ocrFindItemCount(lines){
+  for(let i=0;i<lines.length;i++){
+    const s=ocrCompact(lines[i]);
+    if(!/^(?:小計|商品小計|商品合計|合計)/.test(s))continue;
+    let m=s.match(/(\d{1,3})\s*(?:点|品)(?!\w)/);
+    if(!m){const n=ocrCompact(lines[i+1]||'');m=n.match(/^(\d{1,3})\s*(?:点|品)$/)}
+    if(m)return Number(m[1]);
+  }
+  return null;
+}
 function ocrFindDiscounts(lines){
   return lines.filter(x=>/^(?:.+\s)?(?:値引|割引|クーポン|お値引|端数調整)/.test(ocrCompact(x))||/^(?:ポイント利用|ポイント値引|ポイント充当)/.test(ocrCompact(x))).slice(0,12);
 }
@@ -151,6 +226,7 @@ function ocrMerchant(lines){
 }
 function ocrRateHint(item){
   if(item.taxRate)return{rate:item.taxRate,reliable:true};
+  if(item.taxMark&&item.hasReducedMarkLegend)return{rate:8,reliable:true};
   // A rate inferred from a product name is advisory only: packaging and usage may change taxability.
   const s=item.name;
   if(/(?:ビール|チューハイ|ワイン|日本酒|焼酎|酒類|シャンプー|洗剤|歯ブラシ|ティッシュ|トイレット|化粧|乾電池|電池|文具)/i.test(s))return{rate:10,reliable:false};
@@ -188,6 +264,10 @@ function ocrAllocateTax(items,totalTax,taxes=[]){
   return ocrTaxShares(items.map(i=>i.taxKind==='inclusive'?0:i.rawAmount*ocrRateHint(i).rate),totalTax);
 }
 function ocrReconcile(items,allLines,totalInfo){
+  const hasReducedLegend=allLines.some(line=>/(?:※|＊|\*)\s*印.*(?:軽減|8[%％])/.test(ocrLine(line)));
+  items.forEach(i=>{i.hasReducedMarkLegend=hasReducedLegend;});
+  const printedCount=ocrFindItemCount(allLines);
+  const parsedCount=items.reduce((n,i)=>n+(i.qty||1),0);
   const rawSum=items.reduce((s,i)=>s+i.rawAmount,0);
   const total=totalInfo.amount;
   const taxes=ocrFindTaxes(allLines),subtotals=ocrFindSubtotals(allLines),discounts=ocrFindDiscounts(allLines);
@@ -198,7 +278,7 @@ function ocrReconcile(items,allLines,totalInfo){
   const explicitGross=items.some(x=>x.taxKind==='inclusive')||subtotals.some(x=>/税込/.test(x.compact))||taxes.some(x=>x.kind==='inclusive');
   const result={mode:'unknown',status:'review',printedTotal:total,subtotal:subtotals.at(-1)?.amount??null,rawSum,itemSum:rawSum,observedTax,
     allocatedTax:0,difference:total===null?null:total-rawSum,hasDiscounts:discounts.length>0,discountLines:discounts,
-    explanations:[],taxLines:taxes.map(v=>v.line),ignoredCount:0};
+    explanations:[],taxLines:taxes.map(v=>v.line),ignoredCount:0,printedCount,parsedCount};
   if(!items.length){result.explanations.push('商品行を読み取れませんでした。写真を見ながら明細を入力してください。');return result;}
   const diff=total===null?null:total-rawSum;
   if(total!==null&&Math.abs(diff)<=tolerance){
@@ -217,7 +297,7 @@ function ocrReconcile(items,allLines,totalInfo){
       result.itemSum=items.reduce((a,b)=>a+b.amount,0);
       result.difference=total-result.itemSum;
       const allKnown=items.length===1||items.every(i=>ocrRateHint(i).reliable);
-      result.status=taxProof&&allKnown?'match':'review';
+      result.status=taxProof&&allKnown&&subtotalMatch?'match':'review';
       result.explanations.push('税抜金額と判断し、レシート上の合計と一致するよう消費税 '+diff+'円を明細に配分しました。');
       if(!taxProof)result.explanations.push('税額の直接照合ができないため、税込換算は仮計算です。写真で確認してください。');
       if(!allKnown&&items.length>1)result.explanations.push('各商品の税率が特定できないため、税額の配分比率は推定です。商品別税込価格を確認してください。');
@@ -234,6 +314,7 @@ function ocrReconcile(items,allLines,totalInfo){
   if(subtotals.length&&!subtotalMatch&&!(total!==null&&Math.abs(rawSum-total)<=1)){
     result.status='review';result.explanations.push('読み取った小計と商品明細の金額にも差があります。');
   }
+  if(printedCount!==null&&parsedCount!==printedCount){result.status='review';result.explanations.push(`レシートは${printedCount}点ですが、抽出結果は${parsedCount}点です。明細の読み落としや数量を確認してください。`);}
   if(discounts.length){
     result.status='review';result.explanations.push('値引き・ポイント関連の行があります。支払手段のポイント利用と値引きは別なので、内容を確認してください。');
   }
@@ -259,7 +340,7 @@ function ocrExtractReceipt(raw,layoutLines=[]){
   });
   assessments.sort((a,b)=>b.score-a.score);
   const selected=assessments[0];
-  const warnings=[];
+  const warnings=[...selected.src.parsed.notes];
   const rec=selected.rec;
   if(!selected.items.length)warnings.push('商品明細を抽出できませんでした。カード番号や税額・小計を商品登録せず、写真を見て入力してください');
   if(rec.status!=='match')warnings.push(...rec.explanations);

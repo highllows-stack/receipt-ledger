@@ -261,7 +261,7 @@ async function editSave(){
     const unresolved=items.some(i=>/未読み取り|確認して入力/.test(i.name)||(!i.amount&&i.category==='その他')); 
     const removed=prior.items.filter(i=>!items.some(n=>n.id===i.id)).map(i=>i.id);
     if(removed.length&&!confirm(`削除する商品が${removed.length}件あります。保存すると商品明細が削除されます。続けますか？`))return;
-    edited={...prior,date,merchant,items,receiptTotal:total,
+    edited={...prior,date,merchant,items,receiptTotal:total,receiptOcrText:currentEditPurchase.receiptOcrText||prior.receiptOcrText||'',
       reviewStatus:mismatch||unresolved?'needs_review':editGet('editReview').value,updatedAt:new Date().toISOString()};
   }catch(e){editStatus(e.message);return;}
   purchaseEditorBusy=true;editGet('editSave').disabled=true;editStatus('保存中です…');

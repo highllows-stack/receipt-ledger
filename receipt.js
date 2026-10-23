@@ -1,5 +1,5 @@
 'use strict';
-// OCR + photo + conservative monetary reconciliation v1.2. Browser only gets a public Supabase key and the user's JWT.
+// OCR + photo + conservative monetary reconciliation v1.3. Browser only gets a public Supabase key and the user's JWT.
 let receiptRunning=false;
 const receiptStates=new WeakMap();
 const receiptEl=id=>document.getElementById(id);
@@ -55,9 +55,9 @@ async function scanOne(file){
   const parsed=ocrExtractReceipt(result.text||'',result.layoutLines||[]);
   const fingerprint=await receiptFingerprint(parsed.items.length?result.text||image.imageBase64:image.imageBase64);
   if(state.purchases.some(p=>p.receiptFingerprint===fingerprint))return{status:'duplicate',parsed};
-  const items=parsed.items.map(({name,amount})=>{
+  const items=parsed.items.map(({name,amount,qty,unit})=>{
     const [category,subcategory]=guessCategory(name);
-    const base={id:uid(),name,canonical:normalize(name),amount,qty:1,size:null,unit:'個',category,subcategory,origin:'',state:''};
+    const base={id:uid(),name,canonical:normalize(name),amount,qty:qty||1,size:null,unit:unit||'個',category,subcategory,origin:'',state:''};
     return window.learningApplyOCRItem?.(base)||base;
   });
   // A tax-only OCR result must NEVER fabricate a tax item or a purchase amount.
@@ -114,7 +114,8 @@ function receiptAuditHTML(parsed,purchase){
   const excluded=parsed.ignoredLines.slice(0,16).map(line=>`<li>${esc(ocrRedactPrivateText(line))}</li>`).join('');
   return `<div class="audit-status ${a.status==='match'?'audit-ok':'audit-review'}">${status}</div>
     <div class="audit-figures">
-      <div><small>OCR商品候補</small><strong>${parsed.items.length}件</strong></div>
+      <div><small>OCR商品明細</small><strong>${parsed.items.length}行</strong></div>
+      <div><small>印字点数／解析点数</small><strong>${a.printedCount??'不明'}／${a.parsedCount}点</strong></div>
       <div><small>読取商品金額（税抜の可能性）</small><strong>${money(a.rawSum)}</strong></div>
       <div><small>印字された小計</small><strong>${money(a.subtotal)}</strong></div>
       <div><small>印字された消費税</small><strong>${money(a.observedTax)}</strong></div>
@@ -125,7 +126,7 @@ function receiptAuditHTML(parsed,purchase){
     </div><p class="audit-note">${esc(description)}。${a.observedTax!=null?'印字された税額 '+money(a.observedTax)+'。':''}</p>
     ${changed?`<p class="audit-saved-warning">現在の保存済み明細 ${money(savedSum)} と、新解析 ${money(a.itemSum)} が異なります。**再作成**ボタンで候補を確認後に取り込めます（保存前は履歴に影響しません）。</p>`.replace(/\*\*(.*?)\*\*/g,'<strong>$1</strong>'):''}
     ${details?`<ul class="audit-reasons">${details}</ul>`:''}
-    ${parsed.items.length?`<details class="audit-ignored"><summary>商品ごとの税抜金額・加算税額・税込金額を確認</summary><div class="audit-table-wrap"><table class="audit-table"><thead><tr><th>商品</th><th>読取額</th><th>加算税</th><th>税込</th></tr></thead><tbody>${parsed.items.map(item=>`<tr><td>${esc(item.name)}</td><td>${money(item.rawAmount)}</td><td>${money(item.taxAdded||0)}</td><td><strong>${money(item.amount)}</strong></td></tr>`).join('')}</tbody></table></div></details>`:''}
+    ${parsed.items.length?`<details class="audit-ignored"><summary>商品ごとの税抜金額・加算税額・税込金額を確認</summary><div class="audit-table-wrap"><table class="audit-table"><thead><tr><th>商品</th><th>数量</th><th>読取額</th><th>加算税</th><th>税込</th></tr></thead><tbody>${parsed.items.map(item=>`<tr><td>${esc(item.name)}</td><td>${item.qty||1}</td><td>${money(item.rawAmount)}</td><td>${money(item.taxAdded||0)}</td><td><strong>${money(item.amount)}</strong></td></tr>`).join('')}</tbody></table></div></details>`:''}
     ${excluded?`<details class="audit-ignored"><summary>商品として登録しなかった行を確認（${parsed.ignoredLines.length}行）</summary><ul>${excluded}</ul></details>`:''}`;
 }
 function receiptShowAuditInEditor(p){
@@ -135,9 +136,116 @@ function receiptShowAuditInEditor(p){
   catch(e){panel.innerHTML='<h3>レシート金額の照合</h3><p class="muted">再解析できませんでした。写真で内容を確認してください。</p>';console.error(e);}
 }
 let receiptPhotoSignedUrl='',receiptPhotoZoom=1,receiptPhotoOpenSeq=0;
+let receiptPhotoOriginalBlob=null,receiptPhotoRotation=0,receiptPhotoRotatedBase64=null,receiptPhotoRotatedUrl='';
+let receiptOCRFromRescan=null,receiptPhotoBusy=false;
+function receiptRevokePreview(){if(receiptPhotoRotatedUrl){URL.revokeObjectURL(receiptPhotoRotatedUrl);receiptPhotoRotatedUrl='';}}
+function receiptUpdateRotationButton(){receiptEl('editPhotoSaveRotation').disabled=!receiptPhotoRotatedBase64||receiptPhotoBusy;}
+async function receiptGetOriginalBlob(){
+  if(!receiptPhotoOriginalBlob){
+    if(!currentEditPurchase?.receiptImagePath)throw Error('保存済みレシート写真がありません。');
+    receiptPhotoOriginalBlob=await window.sbDownloadReceiptImage(currentEditPurchase);
+  }
+  return receiptPhotoOriginalBlob;
+}
+// Produce actual rotated JPEG pixels, not a CSS transform. Thus rotation survives
+// a new device, signed URL, page reload and the image viewer.
+async function receiptRotatedJPEG(original,degrees){
+  const url=URL.createObjectURL(original);const src=new Image();
+  try{src.src=url;await src.decode();}
+  finally{URL.revokeObjectURL(url);}
+  const sourceWidth=src.naturalWidth,sourceHeight=src.naturalHeight;
+  let scale=Math.min(1,3400/Math.max(sourceWidth,sourceHeight)),quality=.91;
+  for(let attempt=0;attempt<7;attempt++){
+    const swapped=degrees%180!==0;
+    const canvas=document.createElement('canvas');
+    canvas.width=Math.max(1,Math.round((swapped?sourceHeight:sourceWidth)*scale));
+    canvas.height=Math.max(1,Math.round((swapped?sourceWidth:sourceHeight)*scale));
+    const ctx=canvas.getContext('2d',{alpha:false});if(!ctx)throw Error('画像を回転できませんでした');
+    ctx.fillStyle='#fff';ctx.fillRect(0,0,canvas.width,canvas.height);
+    ctx.scale(scale,scale);
+    if(degrees===90){ctx.translate(sourceHeight,0);ctx.rotate(Math.PI/2)}
+    if(degrees===180){ctx.translate(sourceWidth,sourceHeight);ctx.rotate(Math.PI)}
+    if(degrees===270){ctx.translate(0,sourceWidth);ctx.rotate(-Math.PI/2)}
+    ctx.drawImage(src,0,0);
+    const data=canvas.toDataURL('image/jpeg',quality).split(',')[1];
+    if(data&&data.length<=6_400_000){
+      const blob=await new Promise(resolve=>canvas.toBlob(resolve,'image/jpeg',quality));
+      if(!blob)throw Error('回転した写真を作れませんでした');
+      return{base64:data,blob};
+    }
+    scale*=.84;quality=Math.max(.72,quality-.04);
+  }
+  throw Error('回転後の画像サイズが大きすぎます。画像を小さくしてから登録してください');
+}
+async function receiptRotatePhoto(degreeDelta){
+  if(receiptPhotoBusy)return;
+  if(!currentEditPurchase?.receiptImagePath)return receiptEl('editPhotoStatus').textContent='先にレシート写真を添付してください';
+  receiptPhotoBusy=true;receiptUpdateRotationButton();
+  const seq=receiptPhotoOpenSeq;
+  try{
+    receiptEl('editPhotoStatus').textContent='写真を回転しています…';
+    const source=await receiptGetOriginalBlob();
+    if(seq!==receiptPhotoOpenSeq)return;
+    receiptPhotoRotation=(receiptPhotoRotation+degreeDelta+360)%360;
+    if(receiptPhotoRotation===0){
+      receiptRevokePreview();receiptPhotoRotatedBase64=null;
+      receiptEl('editReceiptImage').src=receiptPhotoSignedUrl;
+      receiptEl('editPhotoStatus').textContent='元の向きに戻しました。';
+    }else{
+      const rotated=await receiptRotatedJPEG(source,receiptPhotoRotation);
+      if(seq!==receiptPhotoOpenSeq)return;
+      receiptRevokePreview();receiptPhotoRotatedBase64=rotated.base64;
+      receiptPhotoRotatedUrl=URL.createObjectURL(rotated.blob);
+      receiptEl('editReceiptImage').src=receiptPhotoRotatedUrl;
+      receiptEl('editReceiptImage').style.width=(receiptPhotoZoom*100)+'%';
+      receiptEl('editPhotoStatus').textContent='プレビューを'+receiptPhotoRotation+'°回転しました。別の端末にも反映するには「回転をクラウドに保存」を押してください。';
+    }
+  }catch(e){receiptEl('editPhotoStatus').textContent='回転に失敗：'+e.message;}
+  finally{receiptPhotoBusy=false;receiptUpdateRotationButton();}
+}
+async function receiptSaveRotation(){
+  if(receiptPhotoBusy||!receiptPhotoRotatedBase64||!currentEditPurchase)return;
+  if(!confirm('回転した写真で、保存済み写真を置き換えますか？ 回転後の写真はPC・スマホ共通になり、保存期限が約30日に更新されます。'))return;
+  receiptPhotoBusy=true;receiptUpdateRotationButton();
+  try{
+    receiptEl('editPhotoStatus').textContent='回転した写真を非公開ストレージに保存しています…';
+    const meta=await window.sbAttachReceiptImage(currentEditPurchase,receiptPhotoRotatedBase64);
+    Object.assign(currentEditPurchase,meta);
+    const stored=state.purchases.find(x=>x.id===currentEditPurchase.id);
+    if(stored)Object.assign(stored,meta);
+    await receiptShowPhotoInEditor(currentEditPurchase);
+    receiptEl('editPhotoStatus').textContent='回転した向きを保存しました。別の端末でも同じ向きで表示されます。';
+  }catch(e){receiptEl('editPhotoStatus').textContent='回転写真の保存に失敗：'+e.message;}
+  finally{receiptPhotoBusy=false;receiptUpdateRotationButton();}
+}
+async function receiptRerunOCRFromPhoto(){
+  if(receiptPhotoBusy||!currentEditPurchase?.receiptImagePath)return;
+  if(!window.cloudMode)return receiptEl('editPhotoStatus').textContent='再OCRにはクラウドへのログインが必要です';
+  if(!confirm('保存写真をGoogle Cloud Visionで再読み取りします。追加のOCRリクエスト1回分が発生し、無料枠・トライアルを超えると料金が発生する場合があります。実行しますか？'))return;
+  receiptPhotoBusy=true;receiptUpdateRotationButton();
+  const seq=receiptPhotoOpenSeq;
+  try{
+    receiptEl('editPhotoStatus').textContent='保存写真を再OCRしています…';
+    let image;
+    if(receiptPhotoRotatedBase64)image={imageBase64:receiptPhotoRotatedBase64,mimeType:'image/jpeg'};
+    else{const blob=await receiptGetOriginalBlob();image=await extractImage(new File([blob],'receipt.jpg',{type:blob.type||'image/jpeg'}));}
+    const result=await sbApi('/functions/v1/receipt-ocr',{method:'POST',data:image});
+    if(seq!==receiptPhotoOpenSeq)return;
+    const parsed=ocrExtractReceipt(result?.text||'',result?.layoutLines||[]);
+    if(!parsed.items.length){receiptEl('editPhotoStatus').textContent='再OCRから商品を見つけられませんでした。写真を見ながら手入力してください。';return;}
+    receiptOCRFromRescan={purchaseId:currentEditPurchase.id,parsed};
+    currentEditPurchase.receiptOcrText=ocrRedactPrivateText(String(result.text||'').slice(0,30000));
+    receiptEl('editOcrText').textContent=currentEditPurchase.receiptOcrText;
+    receiptEl('editReceiptAudit').innerHTML='<h3>レシート金額の照合（再OCR結果・未保存）</h3>'+receiptAuditHTML(parsed,currentEditPurchase);
+    receiptEl('editPhotoStatus').textContent=`再OCRで${parsed.items.length}商品行・${parsed.reconciliation.parsedCount}点を検出しました。下の「OCR原文から明細を再作成」を押し、写真と照合して保存してください。`;
+  }catch(e){receiptEl('editPhotoStatus').textContent='再OCRに失敗：'+e.message;}
+  finally{receiptPhotoBusy=false;receiptUpdateRotationButton();}
+}
+
 function receiptClearPhotoInEditor(){
   receiptPhotoOpenSeq++;
-  receiptPhotoSignedUrl='';receiptPhotoZoom=1;
+  receiptPhotoSignedUrl='';receiptPhotoZoom=1;receiptPhotoOriginalBlob=null;receiptPhotoRotatedBase64=null;receiptPhotoRotation=0;receiptOCRFromRescan=null;receiptRevokePreview();
+  receiptUpdateRotationButton();
   receiptEl('editReceiptReference').classList.remove('has-photo');
   const img=receiptEl('editReceiptImage');img.hidden=true;img.removeAttribute('src');
   receiptEl('editReceiptPhotoMessage').hidden=false;
@@ -187,20 +295,24 @@ function receiptInit(){
   receiptEl('editPhotoAttach').onchange=e=>receiptAttachFromEditor(e.target.files?.[0]);
   const image=receiptEl('editReceiptImage');
   const zoom=n=>{receiptPhotoZoom=Math.max(.5,Math.min(3,receiptPhotoZoom+n));image.style.width=(receiptPhotoZoom*100)+'%';receiptEl('editPhotoZoomValue').textContent=Math.round(receiptPhotoZoom*100)+'%';};
+  receiptEl('editPhotoRotateLeft').onclick=()=>receiptRotatePhoto(-90);
+  receiptEl('editPhotoRotateRight').onclick=()=>receiptRotatePhoto(90);
+  receiptEl('editPhotoSaveRotation').onclick=receiptSaveRotation;
+  receiptEl('editPhotoRerunOCR').onclick=receiptRerunOCRFromPhoto;
   receiptEl('editPhotoZoomOut').onclick=()=>zoom(-.25);
   receiptEl('editPhotoZoomIn').onclick=()=>zoom(.25);
-  receiptEl('editPhotoNewTab').onclick=()=>{if(receiptPhotoSignedUrl)window.open(receiptPhotoSignedUrl,'_blank','noopener,noreferrer');else receiptEl('editPhotoStatus').textContent='表示できる写真がありません';};
+  receiptEl('editPhotoNewTab').onclick=()=>{if(receiptPhotoRotatedUrl||receiptPhotoSignedUrl)window.open(receiptPhotoRotatedUrl||receiptPhotoSignedUrl,'_blank','noopener,noreferrer');else receiptEl('editPhotoStatus').textContent='表示できる写真がありません';};
   receiptEl('editOcrRetryParse').onclick=()=>{
     if(!currentEditPurchase?.receiptOcrText)return receiptEl('editPhotoStatus').textContent='この購入には保存されたOCR原文がありません';
-    const parsed=ocrExtractReceipt(currentEditPurchase.receiptOcrText);
+    const parsed=(receiptOCRFromRescan?.purchaseId===currentEditPurchase.id?receiptOCRFromRescan.parsed:null)||ocrExtractReceipt(currentEditPurchase.receiptOcrText);
     if(!parsed.items.length)return receiptEl('editPhotoStatus').textContent='原文から商品を特定できませんでした。写真を見ながら手動で明細を入力してください';
     const currentRows=editGet('editItems').children.length;
     const originalItems=currentEditPurchase.items||[];
     const used=new Set();
     const prepared=parsed.items.map(candidate=>{
-      const{name,amount}=candidate;
+      const{name,amount,qty,unit}=candidate;
       const[category,subcategory]=guessCategory(name);
-      const draft={id:uid(),name,canonical:normalize(name),amount,qty:1,size:null,unit:'個',category,subcategory,origin:'',state:'',allocations:[{month:String(currentEditPurchase.date||today()).slice(0,7),amount,quantity:null}]};
+      const draft={id:uid(),name,canonical:normalize(name),amount,qty:qty||1,size:null,unit:unit||'個',category,subcategory,origin:'',state:'',allocations:[{month:String(currentEditPurchase.date||today()).slice(0,7),amount,quantity:null}]};
       const learned=window.learningApplyOCRItem?.(draft)||draft;
       const signature=s=>String(s||'').normalize('NFKC').toLowerCase().replace(/[\s\u3000\-・_.,]/g,'');
       const match=originalItems.find(i=>!used.has(i.id)&&[i.name,i.canonical].some(v=>signature(v)===signature(name)||signature(v)===signature(learned.canonical)));

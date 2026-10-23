@@ -134,3 +134,10 @@ button.chart-mode-button.selected{background:#1d6c54;color:#fff;box-shadow:0 1px
 @media(min-width:1100px){.audit-figures{grid-template-columns:repeat(3,minmax(0,1fr))}}
 
 .audit-table-wrap{overflow-x:auto;margin-top:10px}.audit-table{border-collapse:collapse;width:100%;font-size:12px}.audit-table th,.audit-table td{padding:8px 5px;border-bottom:1px solid #dfe9e3;text-align:right;white-space:nowrap}.audit-table th:first-child,.audit-table td:first-child{text-align:left;white-space:normal;min-width:105px;max-width:210px;word-break:break-word}
+
+/* v1.3 photo rotation and review tools */
+.receipt-photo-tools #editPhotoSaveRotation{background:#e9f3ed;border-color:#a4cbb3;color:#184d42;font-weight:700}
+.receipt-photo-tools #editPhotoSaveRotation:disabled{opacity:.55;cursor:not-allowed}
+.photo-rotation-hint{font-size:.77rem;line-height:1.5;margin:0 0 6px}
+.receipt-photo-tools #editPhotoRotateLeft,.receipt-photo-tools #editPhotoRotateRight{min-width:76px}
+@media(max-width:500px){.receipt-photo-tools button{font-size:.77rem!important;}}
