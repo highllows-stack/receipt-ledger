@@ -141,3 +141,12 @@ button.chart-mode-button.selected{background:#1d6c54;color:#fff;box-shadow:0 1px
 .photo-rotation-hint{font-size:.77rem;line-height:1.5;margin:0 0 6px}
 .receipt-photo-tools #editPhotoRotateLeft,.receipt-photo-tools #editPhotoRotateRight{min-width:76px}
 @media(max-width:500px){.receipt-photo-tools button{font-size:.77rem!important;}}
+
+/* v1.4: immediately show photo rotation, independent of network access. */
+.receipt-image-frame{position:relative;margin:0 auto;flex-shrink:0;min-height:0;}
+.receipt-image-frame img{position:absolute!important;top:50%;left:50%;height:auto!important;max-width:none!important;max-height:none!important;margin:0!important;transform-origin:center center;}
+.receipt-photo-area{overflow:auto;overscroll-behavior:contain;}
+#editPhotoStatus{min-height:1.5em;white-space:pre-wrap;}
+#editReceiptRepairExample{font-weight:700;background:#e3f2e9;border:1px solid #77ba9b;color:#14543a}
+#editOcrRetryParseTop{font-weight:600}
+@media (max-width:700px){#editReceiptRepairExample,#editOcrRetryParseTop{width:100%;}}

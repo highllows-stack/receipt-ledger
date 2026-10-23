@@ -135,15 +135,93 @@ function receiptShowAuditInEditor(p){
   try{panel.innerHTML='<h3>レシート金額の照合</h3>'+receiptAuditHTML(ocrExtractReceipt(p.receiptOcrText),p);}
   catch(e){panel.innerHTML='<h3>レシート金額の照合</h3><p class="muted">再解析できませんでした。写真で内容を確認してください。</p>';console.error(e);}
 }
+// One-time, explicitly confirmed rescue of the particular receipt supplied as a photo
+// by the user. This is not a replacement for general OCR and is NEVER applied silently.
+function receiptIsUserVerifiedMaruetsu(p){
+  if(!p||p.date!=='2026-10-23'||!/maruetsu|マルエツ/i.test(p.merchant||''))return false;
+  const total=Number(p.receiptTotal);
+  return total===14422&&p.items?.length>=10&&p.items?.some(i=>/(?:WAON|11点|レジ\s*No|レジ番号)/i.test(i.name));
+}
+function receiptApplyVerifiedMaruetsuRepair(){
+  const p=currentEditPurchase;
+  if(!receiptIsUserVerifiedMaruetsu(p))return;
+  const content=[
+    ['333 かぼちゃ',316,1,'食材','野菜'],
+    ['521 TVBP 木綿豆腐',108,1,'食材','豆製品'],
+    ['507 BP ブルーベリー',148,1,'食材','果物'],
+    ['147 ドリンクゼリー',108,1,'食品・飲料','その他'],
+    ['147 エナジー180M',108,1,'食品・飲料','飲料'],
+    ['147 エナジー180R',108,1,'食品・飲料','飲料'],
+    ['147 ドリンクゼリー',108,1,'食品・飲料','その他'],
+    ['625 キャベツガリバタ',447,3,'食材','野菜'],
+    ['625 にんにく炒め',149,1,'食品・飲料','惣菜・弁当']
+  ];
+  const rawTotal=content.reduce((sum,row)=>sum+row[1],0);
+  if(rawTotal!==1600)throw Error('確認済みの小計が一致しません');
+  const taxShares=ocrTaxShares(content.map(row=>row[1]*8),128);
+  const entries=content.map((row,i)=>({name:row[0],raw:row[1],tax:taxShares[i],total:row[1]+taxShares[i],qty:row[2],category:row[3],subcategory:row[4]}));
+  const gross=entries.reduce((sum,x)=>sum+x.total,0),points=entries.reduce((sum,x)=>sum+x.qty,0);
+  if(gross!==1728||points!==11||entries.length!==9)throw Error('照合結果が一致しません');
+  const preview=entries.map(x=>x.name+' ×'+x.qty+'　税込'+x.total+'円').join('\n');
+  const message='今回送っていただいた写真と照合した商品9行／11点を編集欄へ読み込みます。\n'
+    +'税抜小計1,600円＋印字消費税128円＝税込1,728円\n\n'+preview
+    +'\n\n※ 税額はレシートの8％税額128円を各行に按分しています。'+
+    '\n※ 現在編集中の明細と月別配分は置き換わります。購入履歴には「変更を保存」を押すまで反映されません。\n続けますか？';
+  if(!confirm(message))return;
+  const month='2026-10';
+  const wrap=editGet('editItems');wrap.innerHTML='';
+  for(const x of entries){
+    const name=x.name.replace(/^\d{3}\s+/,'');
+    const item={id:uid(),name,canonical:normalize(name),amount:x.total,qty:x.qty,size:null,unit:'個',
+      category:x.category,subcategory:x.subcategory,origin:'',state:'',allocations:[{month,amount:x.total,quantity:null}]};
+    wrap.append(editNewRow(item));
+  }
+  editGet('editReceiptTotal').value='1728';
+  editGet('editReview').value='needs_review';
+  editTotals();
+  receiptEl('editReceiptAudit').innerHTML='<h3>写真で照合した明細候補（未保存）</h3>'+
+    '<div class="audit-status audit-ok">商品9行・数量11点・税抜1,600円＋税128円＝税込1,728円</div>'+
+    '<p class="audit-note">上の写真と見比べた修正候補を編集欄に表示しています。旧OCRの誤認識原文は証拠として残します。'+
+    '108円の商品でも税込116円または117円になるのは、税額128円を行ごとに端数調整しているためです。</p>';
+  receiptEl('editPhotoStatus').textContent='今回のレシートの正しい明細候補を編集欄へセットしました。商品と分類を確認して、画面下の「変更を保存」を押してください。';
+  receiptEl('editReceiptRepairExample').hidden=true;
+}
+function receiptToggleVerifiedRepair(p){
+  const b=receiptEl('editReceiptRepairExample');if(b)b.hidden=!receiptIsUserVerifiedMaruetsu(p);
+}
 let receiptPhotoSignedUrl='',receiptPhotoZoom=1,receiptPhotoOpenSeq=0;
 let receiptPhotoOriginalBlob=null,receiptPhotoRotation=0,receiptPhotoRotatedBase64=null,receiptPhotoRotatedUrl='';
 let receiptOCRFromRescan=null,receiptPhotoBusy=false;
 function receiptRevokePreview(){if(receiptPhotoRotatedUrl){URL.revokeObjectURL(receiptPhotoRotatedUrl);receiptPhotoRotatedUrl='';}}
-function receiptUpdateRotationButton(){receiptEl('editPhotoSaveRotation').disabled=!receiptPhotoRotatedBase64||receiptPhotoBusy;}
+function receiptUpdateRotationButton(){
+  receiptEl('editPhotoSaveRotation').disabled=!receiptPhotoRotation||receiptPhotoBusy||!currentEditPurchase?.receiptImagePath;
+}
+function receiptApplyVisualRotation(){
+  const img=receiptEl('editReceiptImage'),area=receiptEl('editReceiptPhotoArea'),frame=receiptEl('editReceiptImageFrame');
+  if(!img||!frame||!area||!img.naturalWidth||!img.naturalHeight||img.hidden)return;
+  const sourceW=img.naturalWidth,sourceH=img.naturalHeight;
+  const sideways=receiptPhotoRotation===90||receiptPhotoRotation===270;
+  const available=Math.max(150,area.clientWidth-20),zoom=Math.max(.5,Math.min(3,receiptPhotoZoom));
+  const fittedScale=sideways?available/sourceH:available/sourceW;
+  const scale=fittedScale*zoom;
+  const imageW=Math.max(1,sourceW*scale),imageH=Math.max(1,sourceH*scale);
+  const outputW=sideways?imageH:imageW,outputH=sideways?imageW:imageH;
+  frame.style.width=Math.ceil(outputW)+'px';frame.style.height=Math.ceil(outputH)+'px';
+  img.style.width=imageW+'px';img.style.transform='translate(-50%,-50%) rotate('+receiptPhotoRotation+'deg)';
+  receiptEl('editPhotoZoomValue').textContent=Math.round(zoom*100)+'%';
+}
+
 async function receiptGetOriginalBlob(){
   if(!receiptPhotoOriginalBlob){
     if(!currentEditPurchase?.receiptImagePath)throw Error('保存済みレシート写真がありません。');
-    receiptPhotoOriginalBlob=await window.sbDownloadReceiptImage(currentEditPurchase);
+    try{receiptPhotoOriginalBlob=await window.sbDownloadReceiptImage(currentEditPurchase);}
+    catch(primary){
+      // Private signed image is already visible; use it if authenticated download is rejected.
+      if(!receiptPhotoSignedUrl)throw primary;
+      const response=await fetch(receiptPhotoSignedUrl);
+      if(!response.ok)throw primary;
+      receiptPhotoOriginalBlob=await response.blob();
+    }
   }
   return receiptPhotoOriginalBlob;
 }
@@ -177,45 +255,32 @@ async function receiptRotatedJPEG(original,degrees){
   }
   throw Error('回転後の画像サイズが大きすぎます。画像を小さくしてから登録してください');
 }
-async function receiptRotatePhoto(degreeDelta){
+function receiptRotatePhoto(degreeDelta){
   if(receiptPhotoBusy)return;
-  if(!currentEditPurchase?.receiptImagePath)return receiptEl('editPhotoStatus').textContent='先にレシート写真を添付してください';
-  receiptPhotoBusy=true;receiptUpdateRotationButton();
-  const seq=receiptPhotoOpenSeq;
-  try{
-    receiptEl('editPhotoStatus').textContent='写真を回転しています…';
-    const source=await receiptGetOriginalBlob();
-    if(seq!==receiptPhotoOpenSeq)return;
-    receiptPhotoRotation=(receiptPhotoRotation+degreeDelta+360)%360;
-    if(receiptPhotoRotation===0){
-      receiptRevokePreview();receiptPhotoRotatedBase64=null;
-      receiptEl('editReceiptImage').src=receiptPhotoSignedUrl;
-      receiptEl('editPhotoStatus').textContent='元の向きに戻しました。';
-    }else{
-      const rotated=await receiptRotatedJPEG(source,receiptPhotoRotation);
-      if(seq!==receiptPhotoOpenSeq)return;
-      receiptRevokePreview();receiptPhotoRotatedBase64=rotated.base64;
-      receiptPhotoRotatedUrl=URL.createObjectURL(rotated.blob);
-      receiptEl('editReceiptImage').src=receiptPhotoRotatedUrl;
-      receiptEl('editReceiptImage').style.width=(receiptPhotoZoom*100)+'%';
-      receiptEl('editPhotoStatus').textContent='プレビューを'+receiptPhotoRotation+'°回転しました。別の端末にも反映するには「回転をクラウドに保存」を押してください。';
-    }
-  }catch(e){receiptEl('editPhotoStatus').textContent='回転に失敗：'+e.message;}
-  finally{receiptPhotoBusy=false;receiptUpdateRotationButton();}
+  const img=receiptEl('editReceiptImage');
+  if(!currentEditPurchase?.receiptImagePath||!img?.src||img.hidden){receiptEl('editPhotoStatus').textContent='先にレシート写真の読み込みが完了するまで待ってください。';return;}
+  // Rotate locally FIRST. Do not wait for a Supabase download to show the change.
+  receiptPhotoRotation=(receiptPhotoRotation+degreeDelta+360)%360;
+  receiptApplyVisualRotation();receiptUpdateRotationButton();
+  receiptEl('editPhotoStatus').textContent=receiptPhotoRotation===0?'プレビューを元の向きに戻しました。':
+    '写真を '+receiptPhotoRotation+'° 回転しました（プレビュー）。別の端末にも反映するには「回転をクラウドに保存」を押してください。';
 }
 async function receiptSaveRotation(){
-  if(receiptPhotoBusy||!receiptPhotoRotatedBase64||!currentEditPurchase)return;
-  if(!confirm('回転した写真で、保存済み写真を置き換えますか？ 回転後の写真はPC・スマホ共通になり、保存期限が約30日に更新されます。'))return;
+  if(receiptPhotoBusy||!receiptPhotoRotation||!currentEditPurchase)return;
+  if(!confirm('この向きで写真をクラウドに保存しますか？ 新しい写真の有効期限は保存日から約30日です。'))return;
   receiptPhotoBusy=true;receiptUpdateRotationButton();
   try{
-    receiptEl('editPhotoStatus').textContent='回転した写真を非公開ストレージに保存しています…';
-    const meta=await window.sbAttachReceiptImage(currentEditPurchase,receiptPhotoRotatedBase64);
+    receiptEl('editPhotoStatus').textContent='回転した写真を保存するため、画像データを取得しています…';
+    const original=await receiptGetOriginalBlob();
+    const converted=await receiptRotatedJPEG(original,receiptPhotoRotation);
+    receiptEl('editPhotoStatus').textContent='回転した画像をクラウドに保存しています…';
+    const meta=await window.sbAttachReceiptImage(currentEditPurchase,converted.base64);
     Object.assign(currentEditPurchase,meta);
     const stored=state.purchases.find(x=>x.id===currentEditPurchase.id);
     if(stored)Object.assign(stored,meta);
     await receiptShowPhotoInEditor(currentEditPurchase);
-    receiptEl('editPhotoStatus').textContent='回転した向きを保存しました。別の端末でも同じ向きで表示されます。';
-  }catch(e){receiptEl('editPhotoStatus').textContent='回転写真の保存に失敗：'+e.message;}
+    receiptEl('editPhotoStatus').textContent='写真の回転をクラウドに保存しました。';
+  }catch(e){receiptEl('editPhotoStatus').textContent='回転の保存に失敗：'+e.message+'。画面上の回転だけなら通信なしで使えます。';}
   finally{receiptPhotoBusy=false;receiptUpdateRotationButton();}
 }
 async function receiptRerunOCRFromPhoto(){
@@ -227,7 +292,7 @@ async function receiptRerunOCRFromPhoto(){
   try{
     receiptEl('editPhotoStatus').textContent='保存写真を再OCRしています…';
     let image;
-    if(receiptPhotoRotatedBase64)image={imageBase64:receiptPhotoRotatedBase64,mimeType:'image/jpeg'};
+    if(receiptPhotoRotation){const blob=await receiptGetOriginalBlob();const adjusted=await receiptRotatedJPEG(blob,receiptPhotoRotation);image={imageBase64:adjusted.base64,mimeType:'image/jpeg'};}
     else{const blob=await receiptGetOriginalBlob();image=await extractImage(new File([blob],'receipt.jpg',{type:blob.type||'image/jpeg'}));}
     const result=await sbApi('/functions/v1/receipt-ocr',{method:'POST',data:image});
     if(seq!==receiptPhotoOpenSeq)return;
@@ -251,7 +316,9 @@ function receiptClearPhotoInEditor(){
   receiptEl('editReceiptPhotoMessage').hidden=false;
   receiptEl('editReceiptPhotoMessage').textContent='保存済み写真はありません。必要なら下から追加できます。';
   receiptEl('editPhotoZoomValue').textContent='100%';
+  const frame=receiptEl('editReceiptImageFrame');if(frame){frame.style.width='';frame.style.height='';}
   receiptEl('editPhotoAttach').value='';
+  receiptEl('editReceiptRepairExample').hidden=true;
 }
 window.receiptClearPhotoInEditor=receiptClearPhotoInEditor;
 async function receiptShowPhotoInEditor(p){
@@ -259,6 +326,7 @@ async function receiptShowPhotoInEditor(p){
   const seq=receiptPhotoOpenSeq;
   receiptEl('editOcrText').textContent=p.receiptOcrText?ocrRedactPrivateText(p.receiptOcrText):'この購入にはOCR原文が保存されていません。';
   receiptShowAuditInEditor(p);
+  receiptToggleVerifiedRepair(p);
   receiptEl('editPhotoStatus').textContent='原本写真はログインしている本人のみ閲覧できます。保存期間は約30日です。';
   if(!p.receiptImagePath)return;
   receiptEl('editReceiptPhotoMessage').textContent='非公開の写真を読み込んでいます…';
@@ -266,7 +334,7 @@ async function receiptShowPhotoInEditor(p){
     const url=await window.sbGetReceiptImageUrl(p);
     if(seq!==receiptPhotoOpenSeq)return;
     receiptPhotoSignedUrl=url;
-    const img=receiptEl('editReceiptImage');img.onload=()=>{if(seq===receiptPhotoOpenSeq){img.hidden=false;receiptEl('editReceiptPhotoMessage').hidden=true;receiptEl('editReceiptReference').classList.add('has-photo');}};
+    const img=receiptEl('editReceiptImage');img.onload=()=>{if(seq===receiptPhotoOpenSeq){img.hidden=false;receiptEl('editReceiptPhotoMessage').hidden=true;receiptEl('editReceiptReference').classList.add('has-photo');receiptApplyVisualRotation();}};
     img.onerror=()=>{if(seq===receiptPhotoOpenSeq){img.hidden=true;receiptEl('editReceiptPhotoMessage').hidden=false;receiptEl('editReceiptPhotoMessage').textContent='写真を開けませんでした。ログインと保存期限を確認してください。';}};
     img.src=url;
     img.style.width='100%';
@@ -294,15 +362,16 @@ function receiptInit(){
   receiptEl('ocrClear').onclick=()=>{if(receiptRunning)return;pendingImages=[];receiptEl('camera').value='';receiptEl('images').value='';queueSummary();receiptStatus('選択を解除しました');};
   receiptEl('editPhotoAttach').onchange=e=>receiptAttachFromEditor(e.target.files?.[0]);
   const image=receiptEl('editReceiptImage');
-  const zoom=n=>{receiptPhotoZoom=Math.max(.5,Math.min(3,receiptPhotoZoom+n));image.style.width=(receiptPhotoZoom*100)+'%';receiptEl('editPhotoZoomValue').textContent=Math.round(receiptPhotoZoom*100)+'%';};
+  const zoom=n=>{receiptPhotoZoom=Math.max(.5,Math.min(3,receiptPhotoZoom+n));receiptApplyVisualRotation();};
   receiptEl('editPhotoRotateLeft').onclick=()=>receiptRotatePhoto(-90);
   receiptEl('editPhotoRotateRight').onclick=()=>receiptRotatePhoto(90);
   receiptEl('editPhotoSaveRotation').onclick=receiptSaveRotation;
   receiptEl('editPhotoRerunOCR').onclick=receiptRerunOCRFromPhoto;
   receiptEl('editPhotoZoomOut').onclick=()=>zoom(-.25);
   receiptEl('editPhotoZoomIn').onclick=()=>zoom(.25);
-  receiptEl('editPhotoNewTab').onclick=()=>{if(receiptPhotoRotatedUrl||receiptPhotoSignedUrl)window.open(receiptPhotoRotatedUrl||receiptPhotoSignedUrl,'_blank','noopener,noreferrer');else receiptEl('editPhotoStatus').textContent='表示できる写真がありません';};
-  receiptEl('editOcrRetryParse').onclick=()=>{
+  receiptEl('editPhotoNewTab').onclick=()=>{if(receiptPhotoSignedUrl)window.open(receiptPhotoSignedUrl,'_blank','noopener,noreferrer');else receiptEl('editPhotoStatus').textContent='表示できる写真がありません';};
+  window.addEventListener('resize',()=>receiptApplyVisualRotation());
+  const redoParse=()=>{
     if(!currentEditPurchase?.receiptOcrText)return receiptEl('editPhotoStatus').textContent='この購入には保存されたOCR原文がありません';
     const parsed=(receiptOCRFromRescan?.purchaseId===currentEditPurchase.id?receiptOCRFromRescan.parsed:null)||ocrExtractReceipt(currentEditPurchase.receiptOcrText);
     if(!parsed.items.length)return receiptEl('editPhotoStatus').textContent='原文から商品を特定できませんでした。写真を見ながら手動で明細を入力してください';
@@ -327,7 +396,7 @@ function receiptInit(){
         for(let k=0;k<remainder;k++)allocated[indices[k%indices.length].i]++;
         plans=plans.map((a,k)=>({...a,amount:allocated[k]/100}));
       }else{plans=[{month:draft.allocations[0].month,amount,quantity:null}];}
-      return{item:{...match,...learned,id:match.id,name:match.name,canonical:match.canonical,amount,qty:match.qty,size:match.size,unit:match.unit,origin:match.origin,state:match.state,allocations:plans},preserved:true};
+      return{item:{...match,...learned,id:match.id,name:learned.name,canonical:learned.canonical,amount,qty:qty||1,size:match.size,unit:unit||match.unit,origin:match.origin,state:match.state,allocations:plans.map(a=>({...a,quantity:Number(match.qty)===Number(qty)?a.quantity:null}))},preserved:true};
     });
     const preserved=prepared.filter(x=>x.preserved).length;
     const text=`再解析で ${parsed.items.length}件の候補を見つけました（税・小計・カード番号は除外）。現在の編集欄 ${currentRows}件と入れ替えます。\n同じ商品と判定できた ${preserved}件は、元の計上月・配分比率を保持します。その他の商品は購入月に初期化されます。\n\n保存するまでは購入履歴には反映されません。続けますか？`;
@@ -338,8 +407,11 @@ function receiptInit(){
     editGet('editReview').value=parsed.reconciliation.status==='match'?'ok':'needs_review';
     editTotals();
     receiptEl('editPhotoStatus').textContent=`明細を ${parsed.items.length}件に入れ替えました（${preserved}件は既存の月別配分を保持）。写真で品名・税率・税込金額と月別配分を確認してから「変更を保存」を押してください。`;
-    receiptShowAuditInEditor({...currentEditPurchase,items:parsed.items,receiptOcrText:currentEditPurchase.receiptOcrText});
+    receiptEl('editReceiptAudit').innerHTML='<h3>レシート金額の照合（新しい解析候補・未保存）</h3>'+receiptAuditHTML(parsed,{...currentEditPurchase,items:parsed.items});
   };
+  receiptEl('editOcrRetryParse').onclick=redoParse;
+  receiptEl('editOcrRetryParseTop').onclick=redoParse;
+  receiptEl('editReceiptRepairExample').onclick=receiptApplyVerifiedMaruetsuRepair;
   queueSummary();
 }
 receiptInit();
