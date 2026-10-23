@@ -150,3 +150,9 @@ button.chart-mode-button.selected{background:#1d6c54;color:#fff;box-shadow:0 1px
 #editReceiptRepairExample{font-weight:700;background:#e3f2e9;border:1px solid #77ba9b;color:#14543a}
 #editOcrRetryParseTop{font-weight:600}
 @media (max-width:700px){#editReceiptRepairExample,#editOcrRetryParseTop{width:100%;}}
+
+/* v1.5: explicit, user-confirmed VAT allocation tool */
+.receipt-tax-tool{border:1px solid #c3dcd2;background:#f4faf6;border-radius:12px;padding:14px;margin:0 0 16px}
+.receipt-tax-tool h3{margin-top:0}
+.receipt-tax-tool .form-grid{margin:10px 0}
+.receipt-tax-tool #editTaxToolStatus{margin:10px 0 0;line-height:1.6}

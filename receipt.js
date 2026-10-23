@@ -131,20 +131,139 @@ function receiptAuditHTML(parsed,purchase){
 }
 function receiptShowAuditInEditor(p){
   const panel=receiptEl('editReceiptAudit');if(!panel)return;
+  if(receiptIsMaruetsuNetOnly(p)){panel.innerHTML='<h3>レシート金額の照合</h3><div class="audit-status audit-review">税抜小計1,600円のまま登録されています。レシート写真の税込合計は1,728円です。</div><p class="audit-note">下の「印字税額で税込に換算」を使用するか「今回のまるえつレシート」ボタンで128円を明細へ配分してください。</p>';return;}
   if(!p?.receiptOcrText){panel.innerHTML='<h3>レシート金額の照合</h3><p class="muted">この履歴にOCR原文がありません。レシート写真と明細合計を比較してください。</p>';return;}
   try{panel.innerHTML='<h3>レシート金額の照合</h3>'+receiptAuditHTML(ocrExtractReceipt(p.receiptOcrText),p);}
   catch(e){panel.innerHTML='<h3>レシート金額の照合</h3><p class="muted">再解析できませんでした。写真で内容を確認してください。</p>';console.error(e);}
 }
 // One-time, explicitly confirmed rescue of the particular receipt supplied as a photo
 // by the user. This is not a replacement for general OCR and is NEVER applied silently.
-function receiptIsUserVerifiedMaruetsu(p){
-  if(!p||p.date!=='2026-10-23'||!/maruetsu|マルエツ/i.test(p.merchant||''))return false;
-  const total=Number(p.receiptTotal);
-  return total===14422&&p.items?.length>=10&&p.items?.some(i=>/(?:WAON|11点|レジ\s*No|レジ番号)/i.test(i.name));
+// Two known states of the photo verified by the user:
+// (a) old OCR: 12 false rows and 14,422 yen, or
+// (b) after removing false rows: 9 genuine rows still mistakenly at 1,600 yen NET.
+function receiptIsKnownMaruetsu(p){
+  return !!p&&p.date==='2026-10-23'&&/maruetsu|マルエツ/i.test(p.merchant||'');
 }
+function receiptIsMaruetsuNetOnly(p){
+  if(!receiptIsKnownMaruetsu(p)||p.items?.length!==9)return false;
+  const expected=[[/かぼちゃ/,316],[/木綿豆腐/,108],[/ブルーベリー/,148],
+    [/ドリンクゼリー/,108],[/エナジー180M/i,108],[/エナジー180R/i,108],
+    [/ドリンクゼリー/,108],[/キャベツガリバタ/,447],[/にんにく炒め/,149]];
+  const used=new Set();
+  for(const [pattern,amount] of expected){
+    const index=p.items.findIndex((item,i)=>!used.has(i)&&pattern.test(String(item.name||''))&&Math.abs(Number(item.amount)-amount)<.01);
+    if(index===-1)return false;
+    used.add(index);
+  }
+  return p.items.reduce((n,i)=>n+Number(i.amount||0),0)===1600;
+}
+function receiptIsUserVerifiedMaruetsu(p){
+  if(!receiptIsKnownMaruetsu(p))return false;
+  const oldFalse=Number(p.receiptTotal)===14422&&p.items?.length>=10&&
+    p.items.some(i=>/(?:WAON|11点|レジ\s*No|レジ番号)/i.test(i.name));
+  return oldFalse||receiptIsMaruetsuNetOnly(p);
+}
+function receiptIntegerCents(value){return Math.round(Number(value)*100)}
+function receiptTaxAllocation(weights,taxCents){
+  // Use integer cents throughout, and deterministic largest remainder rounding.
+  if(!Number.isSafeInteger(taxCents)||taxCents<0||!weights.length)throw Error('印字税額を確認してください');
+  const total=weights.reduce((n,w)=>n+w,0);
+  if(!Number.isSafeInteger(total)||total<=0||weights.some(w=>!Number.isSafeInteger(w)||w<0))throw Error('明細金額を確認してください');
+  const fractions=weights.map((w,i)=>({i,raw:taxCents*w/total}));
+  const result=fractions.map(x=>Math.floor(x.raw));
+  const remain=taxCents-result.reduce((n,v)=>n+v,0);
+  const order=fractions.map((x,i)=>({i,f:x.raw-result[i]})).sort((a,b)=>b.f-a.f||a.i-b.i);
+  for(let i=0;i<remain;i++)result[order[i%order.length].i]++;
+  return result;
+}
+function receiptPrintedTaxShares(weightsInCents,taxInCents){
+  // In Japanese supermarket receipts, line prices and printed VAT are in whole yen.
+  // Allocate in whole yen when possible. Use cents only for fractional-price records.
+  if(taxInCents%100===0&&weightsInCents.every(v=>v%100===0))
+    return receiptTaxAllocation(weightsInCents,taxInCents/100).map(x=>x*100);
+  return receiptTaxAllocation(weightsInCents,taxInCents);
+}
+// This edits ONLY the open, unsaved form, never the stored purchase or original photo.
+function receiptApplyTaxToEditedItems(taxYen,expectedTotalYen,verified=false){
+  const rows=[...editGet('editItems').querySelectorAll('.purchase-edit-row')];
+  const amounts=rows.map(row=>receiptIntegerCents(row.querySelector('.e-amount').value));
+  const taxCents=receiptIntegerCents(taxYen),totalCents=receiptIntegerCents(expectedTotalYen);
+  const baseCents=amounts.reduce((n,v)=>n+v,0);
+  if(!rows.length||rows.some(row=>/未読み取り|確認して入力/.test(row.querySelector('.e-name').value)))throw Error('未確認の商品があります。先に明細を修正してください');
+  if(!Number.isSafeInteger(taxCents)||taxCents<=0||!Number.isSafeInteger(totalCents)||totalCents<=0)throw Error('税額・税込合計を正しく入力してください');
+  if(baseCents===totalCents)throw Error('すでに税込合計と一致しています。二重加算を防ぐため中止しました');
+  if(baseCents+taxCents!==totalCents)throw Error('現在の明細合計＋印字税額が、入力した税込合計と一致しません。自動補正はしません');
+  const shares=receiptPrintedTaxShares(amounts,taxCents);
+  const preview=rows.map((row,i)=>`${row.querySelector('.e-name').value}: ${yen(amounts[i]/100)} → ${yen((amounts[i]+shares[i])/100)}`).join('\n');
+  if(!confirm('すべての対象明細が税抜表示であり、印字税額がこの商品群に対応することを写真で確認してください。\n'
+    +`税抜小計 ${yen(baseCents/100)} ＋ 印字税 ${yen(taxCents/100)} ＝ 税込 ${yen(totalCents/100)}\n\n`
+    +preview+'\n\n保存済み履歴は「変更を保存」を押すまで変更されません。続けますか？'))return false;
+  // Preflight every month allocation before mutating any editing row.
+  const updates=rows.map((row,i)=>{
+    const planRows=[...row.querySelectorAll('.accounting-row')];
+    if(!planRows.length)throw Error('計上月がありません。先に計上月を設定してください');
+    const plans=planRows.map(r=>({month:r.querySelector('.a-month').value,amount:Number(r.querySelector('.a-amount').value),
+      quantity:r.querySelector('.a-qty').value===''?null:Number(r.querySelector('.a-qty').value)}));
+    const planWeights=plans.map(x=>receiptIntegerCents(x.amount));
+    if(planWeights.reduce((a,b)=>a+b,0)!==amounts[i])throw Error('月別配分合計と商品金額が一致しません。先に月別配分を確認してください');
+    const extra=receiptPrintedTaxShares(planWeights,shares[i]);
+    return{row,newCents:amounts[i]+shares[i],plans:plans.map((x,k)=>({...x,amount:(planWeights[k]+extra[k])/100}))};
+  });
+  for(const update of updates){
+    update.row.querySelector('.e-amount').value=(update.newCents/100).toString();
+    editSetAllocations(update.row,update.plans);
+  }
+  editGet('editReceiptTotal').value=(totalCents/100).toString();
+  editGet('editReview').value='needs_review';
+  editTotals();
+  receiptEl('editReceiptAudit').innerHTML='<h3>写真と照合した税込換算（未保存）</h3>'+
+    `<div class="audit-status audit-ok">${rows.length}商品行・税抜${yen(baseCents/100)}＋印字税${yen(taxCents/100)}＝税込${yen(totalCents/100)}</div>`+
+    '<p class="audit-note">印字税額を比例配分しました。購入数量と月別の計上数量は維持しています。商品ごとの税率・金額は写真で確認してください。</p>';
+  receiptEl('editPhotoStatus').textContent='税込金額を編集欄へセットしました。「変更を保存」を押すまでは履歴に反映されません。';
+  receiptEl('editTaxPrintedTax').value='';
+  receiptEl('editTaxPrintedTotal').value='';
+  receiptEl('editTaxToolStatus').textContent=verified?'今回の写真照合済みの税額を反映しました。明細を確認して保存してください。':'金額を税込に按分しました。写真で確認して保存してください。';
+  receiptEl('editReceiptRepairExample').hidden=true;
+  return true;
+}
+function receiptSetTaxToolInputs(p){
+  const isNet=receiptIsMaruetsuNetOnly(p);
+  receiptEl('editTaxPrintedTax').value=isNet?'128':'';
+  receiptEl('editTaxPrintedTotal').value=isNet?'1728':'';
+  receiptEl('editTaxToolStatus').textContent=isNet?
+    'この写真では税抜小計1,600円＋税128円＝税込1,728円です。確認のうえ税込換算してください。':
+    'すべての商品が税抜で、印字税額と税込合計が分かる場合のみ使用します。8%と10%が混在する場合、税率別確認が必要です。';
+}
+function receiptApplyPrintedTax(){
+  try{receiptApplyTaxToEditedItems(receiptEl('editTaxPrintedTax').value,receiptEl('editTaxPrintedTotal').value)}
+  catch(e){receiptEl('editTaxToolStatus').textContent='税込換算できません：'+e.message;}
+}
+
 function receiptApplyVerifiedMaruetsuRepair(){
   const p=currentEditPurchase;
   if(!receiptIsUserVerifiedMaruetsu(p))return;
+  if(receiptIsMaruetsuNetOnly(p)){
+    try{
+      if(receiptApplyTaxToEditedItems(128,1728,true)){
+        // Only fill unclassified categories; never overwrite the user's edits.
+        const choices=[[/かぼちゃ/,'食材','野菜'],[/木綿豆腐/,'食材','豆製品'],
+          [/ブルーベリー/,'食材','果物'],[/ドリンクゼリー/,'食品・飲料','その他'],
+          [/エナジー180[MR]/i,'食品・飲料','飲料'],[/キャベツガリバタ/,'食材','野菜'],
+          [/にんにく炒め/,'食品・飲料','惣菜・弁当']];
+        for(const row of editGet('editItems').querySelectorAll('.purchase-edit-row')){
+          const major=row.querySelector('.e-category'),minor=row.querySelector('.e-subcategory');
+          if(major.value!=='その他')continue;
+          const name=row.querySelector('.e-name').value;
+          const choice=choices.find(c=>c[0].test(name));if(!choice)continue;
+          major.value=choice[1];major.dispatchEvent(new Event('change',{bubbles:true}));
+          minor.value=choice[2];
+        }
+        editTotals();
+      }
+    }
+    catch(e){receiptEl('editTaxToolStatus').textContent='税込補正できません：'+e.message;}
+    return;
+  }
   const content=[
     ['333 かぼちゃ',316,1,'食材','野菜'],
     ['521 TVBP 木綿豆腐',108,1,'食材','豆製品'],
@@ -327,6 +446,7 @@ async function receiptShowPhotoInEditor(p){
   receiptEl('editOcrText').textContent=p.receiptOcrText?ocrRedactPrivateText(p.receiptOcrText):'この購入にはOCR原文が保存されていません。';
   receiptShowAuditInEditor(p);
   receiptToggleVerifiedRepair(p);
+  receiptSetTaxToolInputs(p);
   receiptEl('editPhotoStatus').textContent='原本写真はログインしている本人のみ閲覧できます。保存期間は約30日です。';
   if(!p.receiptImagePath)return;
   receiptEl('editReceiptPhotoMessage').textContent='非公開の写真を読み込んでいます…';
@@ -412,6 +532,7 @@ function receiptInit(){
   receiptEl('editOcrRetryParse').onclick=redoParse;
   receiptEl('editOcrRetryParseTop').onclick=redoParse;
   receiptEl('editReceiptRepairExample').onclick=receiptApplyVerifiedMaruetsuRepair;
+  receiptEl('editApplyPrintedTax').onclick=receiptApplyPrintedTax;
   queueSummary();
 }
 receiptInit();
