@@ -154,6 +154,15 @@ function ocrDiscountLine(raw,nextRaw=''){
 }
 function ocrParseItemLines(lines){
   const input=lines.map(x=>ocrLine(typeof x==='string'?x:x?.text)).filter(Boolean);
+  // Two-column OCR sometimes places the discount label before the price of
+  // the item immediately above it: name / discount label / base price / -discount.
+  // Move only the base price ahead of that label, leaving the discount itself
+  // to the existing validated subtraction logic.
+  for(let j=0;j+3<input.length;j++){
+    if(!ocrValidName(input[j])||!ocrDiscountLine(input[j+1],input[j+3]))continue;
+    if(!OCR_ONLY_PRICE.test(input[j+2])||!/^[−－-]\s*[￥¥]?\s*\d/.test(input[j+3]))continue;
+    [input[j+1],input[j+2]]=[input[j+2],input[j+1]];
+  }
   const items=[],ignored=[],notes=[],discounts=[];
   let summaryStarted=false;
   for(let i=0;i<input.length;i++){
@@ -226,6 +235,31 @@ function ocrCashEvidence(lines){
     if(!type)continue;
     const value=ocrNearbyMoney(lines,i);
     if(value!=null&&Number.isFinite(value)&&value>=0)out[type]=value;
+  }
+  return out;
+}
+// Google Vision can output an entire right-aligned column *after* its labels:
+// 8%外税額 / 合計 / お預り / お釣り / ¥46 / ¥622 / ¥1,777 / ¥1,155.
+// Reattach only a complete, arithmetically corroborated 4-row block. Keep
+// original lines and add evidence rows; never treat the tender as the total.
+function ocrRestoreColumnMoney(lines){
+  const out=lines.slice();
+  for(let i=0;i+7<lines.length;i++){
+    const labels=lines.slice(i,i+4).map(ocrCompact);
+    if(!/(?:消費税|税額|外税額|内税額)/.test(labels[0])||
+       !/^合計$|^税込合計$|^総合計$/.test(labels[1])||
+       !/^(?:お預り|お預かり|預り|預かり)$/.test(labels[2])||
+       !/^(?:お釣り|おつり|釣銭|お返し)$/.test(labels[3]))continue;
+    const amounts=lines.slice(i+4,i+8).map(s=>{
+      const m=ocrLine(s).match(OCR_ONLY_PRICE);return m?ocrMoney(m[1]):null;
+    });
+    const [tax,total,tender,change]=amounts;
+    if(amounts.some(x=>!Number.isSafeInteger(x)||x<0)||tax<=0||total<=0||
+       tender<total||tender-change!==total)continue;
+    const basis=ocrFindSubtotals(lines).find(s=>s.amount+tax===total);
+    if(!basis||!ocrTaxAmountPlausible(basis.amount,tax,null))continue;
+    for(let k=0;k<4;k++)out.push(`${ocrLine(lines[i+k])} ¥${amounts[k]}`);
+    break;
   }
   return out;
 }
@@ -641,16 +675,18 @@ function ocrExtractReceipt(raw,layoutLines=[]){
   // receipt: the final label of one pass may consume the first number of the
   // other pass. Analyze each pass separately.
   const combinedLines=textLines.length?textLines:geoLines;
-  const totalInfo=ocrFindTotal(combinedLines);
-  const layoutTotal=geoLines.length?ocrFindTotal(geoLines):null;
+  const moneyLines=ocrRestoreColumnMoney(combinedLines);
+  const layoutMoneyLines=geoLines.length?ocrRestoreColumnMoney(geoLines):[];
+  const totalInfo=ocrFindTotal(moneyLines);
+  const layoutTotal=geoLines.length?ocrFindTotal(layoutMoneyLines):null;
   const combinedInfo=totalInfo;
   // Choose independently verified amounts before any unverified OCR total.
   const trustworthy=[totalInfo,layoutTotal,combinedInfo].find(info=>info?.verified&&info.amount!=null);
   const candidateTotal=trustworthy?.amount??combinedInfo?.amount??null;
   const netEvidence=combinedInfo?.netTax||totalInfo.netTax||layoutTotal?.netTax;
   const total=netEvidence&&candidateTotal!=null&&Math.abs(candidateTotal-netEvidence.total)>1?null:candidateTotal;
-  const sources=[{label:'OCR文字列',lines:textLines,parsed:ocrParseItemLines(textLines)}];
-  if(geoLines.length)sources.push({label:'文字の位置情報',lines:geoLines,parsed:ocrParseItemLines(geoLines)});
+  const sources=[{label:'OCR文字列',lines:moneyLines,parsed:ocrParseItemLines(textLines)}];
+  if(geoLines.length)sources.push({label:'文字の位置情報',lines:layoutMoneyLines,parsed:ocrParseItemLines(geoLines)});
   const assessments=sources.map(src=>{
     const items=src.parsed.items.map(i=>({...i}));
     const selectedInfo=src.label==='文字の位置情報'?(layoutTotal||totalInfo):totalInfo;
