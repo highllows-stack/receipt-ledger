@@ -195,6 +195,10 @@ button.chart-mode-button.selected{background:#1d6c54;color:#fff;box-shadow:0 1px
 .item-inline-calculator .item-calc-head button{font-size:12px;padding:5px 10px}
 .item-inline-calculator .inline-expr{background:white;font-size:19px;letter-spacing:.015em;width:100%}
 .item-calc-quick,.item-calc-actions{display:flex;gap:8px;flex-wrap:wrap;margin:9px 0}
+.item-calc-discount{display:grid;grid-template-columns:minmax(90px,1fr) minmax(90px,1fr);gap:8px;margin:10px 0;padding:10px;border:1px solid #b8d8c8;border-radius:9px;background:#f8fcfa}
+.item-calc-discount label{min-width:0;font-size:12px}
+.item-calc-discount select,.item-calc-discount input{width:100%;background:white}
+.item-calc-discount button{grid-column:1/-1}
 .item-calc-quick button{flex:1;min-width:135px;font-size:12px;padding:10px 5px}
 .item-calc-actions button{flex:1;min-width:135px}
 .item-calc-preview{font-size:17px;font-weight:750;color:#124e37;min-height:28px;margin:10px 0 6px}

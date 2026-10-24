@@ -521,6 +521,21 @@ function ocrReconcile(items,allLines,totalInfo,appliedDiscounts=[]){
   const warn=x=>{if(!r.explanations.includes(x))r.explanations.push(x)};
   if(totalInfo.rejected)warn('OCRの合計候補「'+totalInfo.rejected.amount+'円」は独立した金額と矛盾するため採用しませんでした。');
   if(rejectedTaxes.length)warn('OCRの税額候補 '+rejectedTaxes.map(t=>t.amount+'円').join('・')+' は税率・対象額と合わず、税額として採用しませんでした。');
+  // Recover a review-only arithmetic hint when OCR has attached the wrong
+  // labels to adjacent numbers. Never promote the hint to printed evidence.
+  if(printedTotal==null){
+    const uncertain=[...new Set([...eligibleBases.map(x=>x.amount),...rejectedTaxes.map(x=>x.amount)])];
+    const seen=new Set();
+    for(const base of uncertain){
+      for(const vat of uncertain){
+        if(base===vat||vat<=0||!ocrTaxAmountPlausible(base,vat,null))continue;
+        const gross=base+vat;
+        if(!uncertain.includes(gross)||seen.has(gross))continue;
+        seen.add(gross);
+        warn(`OCR金額の組み合わせ候補：${base}円＋${vat}円＝${gross}円。ただし小計・税額・合計の印字ラベルを確認できないため、参考候補として表示します（自動登録しません）。`);
+      }
+    }
+  }
   if(inferredTax!=null)warn('預り−釣銭と税抜対象額から '+inferredTax+'円を税額として参考算出しました。税額の印字自体はOCRで確定できていません。');
   if(eligibleBases.length&&!plausibleBasis)warn('OCRの小計候補は商品・税率・現金差額と整合しないため、印字小計は未確定です。');
   if(!items.length){warn('商品明細を抽出できませんでした。写真を確認してください。');return r;}

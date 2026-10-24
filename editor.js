@@ -294,6 +294,7 @@ function editNewRow(item={}){
   ownCalculator.setAttribute('aria-label','商品別の計算機');
   ownCalculator.innerHTML=`<div class="item-calc-head"><strong>この商品の電卓</strong><button type="button" class="secondary inline-close" aria-label="電卓を閉じる">閉じる</button></div>
     <label>計算式（税抜・割引にも対応）<input type="text" class="inline-expr" inputmode="decimal" autocomplete="off" placeholder="例：384-116"></label>
+    <div class="item-calc-discount"><label>割引方法<select class="inline-discount-mode"><option value="percent">％引き</option><option value="yen">円引き</option></select></label><label>割引率・割引額<input class="inline-discount-value" type="number" min="0" step="any" inputmode="decimal" placeholder="例：20"></label><button type="button" class="secondary inline-discount-apply">式に割引を反映</button></div>
     <div class="item-calc-quick"><button type="button" class="secondary inline-tax8">式の結果に8％を加える</button><button type="button" class="secondary inline-tax10">式の結果に10％を加える</button></div>
     <div class="item-calc-preview" role="status" aria-live="polite">計算式を入力して「計算」を押してください。</div>
     <div class="item-calc-actions"><button type="button" class="secondary inline-equals">＝ 計算</button><button type="button" class="inline-apply">この商品に入力する</button></div>
@@ -330,6 +331,19 @@ function editNewRow(item={}){
   }
   ownCalculator.querySelector('.inline-tax8').addEventListener('click',()=>withTax(8));
   ownCalculator.querySelector('.inline-tax10').addEventListener('click',()=>withTax(10));
+  ownCalculator.querySelector('.inline-discount-apply').addEventListener('click',()=>{
+    const current=exp.value.trim(), mode=ownCalculator.querySelector('.inline-discount-mode').value;
+    const value=Number(ownCalculator.querySelector('.inline-discount-value').value);
+    if(!current||!Number.isFinite(value)||value<0||(mode==='percent'&&value>100)||ownCalculator.querySelector('.inline-discount-value').value.trim()===''){
+      preview.textContent='割引前の計算式と、正しい割引率（0～100％）または割引額を入力してください。';return;
+    }
+    try{
+      const base=editCalcEvaluate(current);
+      if(base<0||(mode==='yen'&&value>base))throw Error('割引額は商品金額以下にしてください。');
+      exp.value=mode==='percent'?`(${current})*(1-${value}/100)`:`(${current})-${value}`;
+      evaluateInline();
+    }catch(err){preview.textContent='割引を適用できません：'+err.message;}
+  });
   exp.addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();ownCalculator.querySelector('.inline-apply').click();}});
   const cat=wrap.querySelector('.e-category'),sub=wrap.querySelector('.e-subcategory');
   function updateSub(selected){sub.innerHTML=editOptions(GROUPS[cat.value],selected||GROUPS[cat.value][0]);}
