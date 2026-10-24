@@ -156,3 +156,46 @@ button.chart-mode-button.selected{background:#1d6c54;color:#fff;box-shadow:0 1px
 .receipt-tax-tool h3{margin-top:0}
 .receipt-tax-tool .form-grid{margin:10px 0}
 .receipt-tax-tool #editTaxToolStatus{margin:10px 0 0;line-height:1.6}
+
+/* v1.7: fractional month allocation and persistent in-editor calculator */
+.accounting-row{grid-template-columns:minmax(110px,1fr) minmax(105px,1fr) minmax(90px,1fr) minmax(92px,1fr) auto;}
+.accounting-row .calc-launch{font-size:12px;margin-top:5px;padding:5px 10px;}
+.purchase-edit-row .calc-launch{font-size:12px;margin-top:5px;padding:6px 12px;}
+#editCalculator[hidden]{display:none!important;}
+.editor-calculator{position:fixed;z-index:250;right:clamp(8px,3vw,50px);bottom:clamp(75px,9vh,140px);width:min(315px,calc(100vw - 16px));max-height:calc(100dvh - 130px);overflow:auto;background:#fff;border:2px solid #16634c;border-radius:15px;box-shadow:0 12px 45px #1117;padding:12px;}
+.editor-calculator .calc-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:5px;}
+.editor-calculator .calc-head button{width:auto;padding:6px 10px;}
+.editor-calculator #editCalculatorExpr{width:100%;font-size:21px;padding:9px;margin:8px 0;border:1px solid #91b1a0;border-radius:8px;}
+.calc-keypad{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:5px;}
+.calc-keypad button{padding:11px 5px;min-height:43px;font-size:17px;}
+.calc-taxes{display:grid;grid-template-columns:1fr 1fr;gap:5px;margin-top:7px;}
+.calc-taxes button{font-size:12px;line-height:1.3;padding:8px 4px;}
+.calc-round{display:flex;align-items:center;gap:7px;font-size:12px;margin-top:7px;}
+.calc-round input{width:auto;}
+#editCalculatorApply{width:100%;padding:10px 5px;}
+#editCalculatorResult{margin:8px 0;min-height:22px;font-size:13px;}
+@media(max-width:750px){.accounting-row{grid-template-columns:1fr 1fr;}.accounting-row button{grid-column:auto;justify-self:stretch;}.editor-calculator{right:7px;bottom:66px;max-height:calc(100dvh - 135px);}.edit-dialog-head h2{font-size:16px;}.edit-dialog-head button{font-size:12px;padding:7px 9px;}}
+
+/* v1.8: amount, fraction and physical-quantity allocation modes */
+.allocation-method-label{display:flex;flex-wrap:wrap;gap:9px;align-items:center;margin:12px 0 7px;font-size:13px;font-weight:700;color:#174b39}
+.allocation-method-label select{max-width:100%;width:auto;min-width:min(320px,100%);padding:9px;margin:0;background:#fff}
+.accounting-row{grid-template-columns:minmax(120px,1fr) minmax(130px,1fr) minmax(120px,1fr) auto;align-items:end;gap:8px;border:1px solid #d0e1d6;border-radius:9px;padding:10px;background:#fff}
+.accounting-row .a-row-preview{grid-column:1/-1;color:#246750;font-size:12px;font-weight:600;margin-top:2px;min-height:0}
+.accounting-row .allocation-qty-control{display:flex;gap:5px;align-items:center;margin-top:3px;min-width:0}
+.accounting-row .allocation-qty-control input{width:100%;min-width:65px;margin:0}
+.accounting-row .allocation-qty-control select{min-width:70px;max-width:95px;width:auto;margin:0;padding:8px 5px;background:#f7fbf8}
+.accounting-row .a-fraction-field[hidden],.accounting-row .a-quantity-field[hidden],.accounting-row .a-row-preview[hidden],.account-actions button[hidden]{display:none!important}
+@media(max-width:750px){.accounting-row{grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:7px;padding:8px}.accounting-row .a-fraction-field,.accounting-row .a-quantity-field{grid-column:1/-1}.accounting-row .a-remove{grid-column:2;justify-self:stretch}.allocation-method-label{display:block}.allocation-method-label select{width:100%;margin-top:5px;min-width:0}}
+@media(max-width:380px){.accounting-row{grid-template-columns:1fr}.accounting-row .a-fraction-field,.accounting-row .a-quantity-field,.accounting-row .a-remove{grid-column:1}}
+
+/* v1.9: genuine per-product inline calculator visible beneath that item amount. */
+.item-inline-calculator{grid-column:1/-1;background:#edf8f2;border:1px solid #96c4b0;padding:12px;border-radius:12px;margin:-1px 0 7px;min-width:0}
+.item-inline-calculator[hidden]{display:none!important}
+.item-inline-calculator .item-calc-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:7px}
+.item-inline-calculator .item-calc-head button{font-size:12px;padding:5px 10px}
+.item-inline-calculator .inline-expr{background:white;font-size:19px;letter-spacing:.015em;width:100%}
+.item-calc-quick,.item-calc-actions{display:flex;gap:8px;flex-wrap:wrap;margin:9px 0}
+.item-calc-quick button{flex:1;min-width:135px;font-size:12px;padding:10px 5px}
+.item-calc-actions button{flex:1;min-width:135px}
+.item-calc-preview{font-size:17px;font-weight:750;color:#124e37;min-height:28px;margin:10px 0 6px}
+@media(max-width:650px){.item-inline-calculator{padding:9px}.item-calc-quick button{min-width:115px;font-size:11px}.item-calc-actions button{min-width:115px;font-size:12px;padding:10px 4px}}

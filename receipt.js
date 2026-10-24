@@ -110,6 +110,9 @@ function receiptAuditHTML(parsed,purchase){
   const description={inclusive:'税込表記として処理（税の二重加算なし）',exclusive:'税抜表記として処理（レシート上の税額を配分）','exclusive-estimated':'税抜推定（レシート合計が不明）',unreconciled:'商品明細・税額・値引きの差額を確認してください',unknown:'税込・税抜を確定できません'}[a.mode]||'確認が必要です';
   const savedSum=purchase?.items?.reduce((sum,item)=>sum+Number(item.amount||0),0);
   const changed=savedSum!=null&&Math.abs(savedSum-a.itemSum)>.01;
+  const savedReceipt=Number(purchase?.receiptTotal);
+  const savedReceiptMismatch=purchase?.receiptTotal!=null&&Number.isFinite(savedReceipt)&&
+    a.effectiveTotal!=null&&Math.abs(savedReceipt-a.effectiveTotal)>.01;
   const details=a.explanations.map(line=>`<li>${esc(line)}</li>`).join('');
   const excluded=parsed.ignoredLines.slice(0,16).map(line=>`<li>${esc(ocrRedactPrivateText(line))}</li>`).join('');
   return `<div class="audit-status ${a.status==='match'?'audit-ok':'audit-review'}">${status}</div>
@@ -124,7 +127,8 @@ function receiptAuditHTML(parsed,purchase){
       <div><small>税込明細の合計</small><strong>${money(a.itemSum)}</strong></div>
       <div><small>レシート印字の合計</small><strong>${money(a.printedTotal)}</strong></div>
       <div><small>税込明細と印字合計の差</small><strong>${a.printedTotal==null?'不明':money(a.printedTotal-a.itemSum)}</strong></div>
-    </div><p class="audit-note">${esc(description)}。${a.observedTax!=null?'印字された税額 '+money(a.observedTax)+'。':''}${a.taxLegend?' '+esc(a.taxLegend)+'。':''}${a.derivedTotal!=null?' 推定税込合計 '+money(a.derivedTotal)+'（レシート印字合計は未確認）。':''}</p>
+    </div><p class="audit-note">${esc(description)}。${a.observedTax!=null?'印字された税額 '+money(a.observedTax)+'。':''}${a.taxLegend?' '+esc(a.taxLegend)+'。':''}${a.derivedTotal!=null?' 推定税込合計 '+money(a.derivedTotal)+'（レシート印字合計は未確認）。':''}${a.discountSum?' 商品に紐づいた値引き '+money(a.discountSum)+' を控除済み。':''}</p>
+    ${savedReceiptMismatch?`<p class="audit-saved-warning"><strong>保存済みのレシート合計 ${money(savedReceipt)} は、新しい照合の参考合計 ${money(a.effectiveTotal)} と異なります。</strong> 預り金などの誤認識の可能性があります。明細の再作成または写真照合済みの修正候補を確認し、最後に「変更を保存」してください。</p>`:''}
     ${changed?`<p class="audit-saved-warning">現在の保存済み明細 ${money(savedSum)} と、新解析 ${money(a.itemSum)} が異なります。**再作成**ボタンで候補を確認後に取り込めます（保存前は履歴に影響しません）。</p>`.replace(/\*\*(.*?)\*\*/g,'<strong>$1</strong>'):''}
     ${details?`<ul class="audit-reasons">${details}</ul>`:''}
     ${parsed.items.length?`<details class="audit-ignored"><summary>商品ごとの税抜金額・加算税額・税込金額を確認</summary><div class="audit-table-wrap"><table class="audit-table"><thead><tr><th>商品</th><th>数量</th><th>税率・根拠</th><th>読取額</th><th>加算税</th><th>税込</th></tr></thead><tbody>${parsed.items.map(item=>`<tr><td>${esc(item.name)}</td><td>${item.qty||1}</td><td>${item.taxRateResolved?item.taxRateResolved+'%':'未確定'}<small>${esc(item.taxRateSource||'')}</small></td><td>${money(item.rawAmount)}</td><td>${money(item.taxAdded||0)}</td><td><strong>${money(item.amount)}</strong></td></tr>`).join('')}</tbody></table></div></details>`:''}
@@ -165,6 +169,60 @@ function receiptIsUserVerifiedMaruetsu(p){
   const oldFalse=Number(p.receiptTotal)===14422&&p.items?.length>=10&&
     p.items.some(i=>/(?:WAON|11点|レジ\s*No|レジ番号)/i.test(i.name));
   return oldFalse||receiptIsMaruetsuNetOnly(p);
+}
+// This photo was supplied by the user and verified independently. Only offer
+// the one-time rescue for the known incorrectly parsed October 24 receipt.
+function receiptIsOctober24DiscountMisread(p){
+  if(!p||p.date!=='2026-10-24'||!/maruetsu|マルエツ/i.test(p.merchant||''))return false;
+  if(![2,3,4,5].includes(p.items?.length))return false;
+  const names=p.items.map(i=>i.name||'').join(' ');
+  const sum=p.items.reduce((n,i)=>n+Number(i.amount||0),0);
+  const recognizable=/豚肉|生姜焼|ロース/.test(names)&&/キャベツ/.test(names)&&
+    (Math.abs(sum-704)<0.01||Math.abs(Number(p.receiptTotal)-704)<0.01);
+  // OCR occasionally drops the discounted pork completely. Offer the photo-verified
+  // rescue only for the known same-day receipt with exact 576 / 622 tax evidence.
+  const raw=String(p.receiptOcrText||'').replace(/\s/g,'');
+  const missingPork=p.items.length===2&&/キャベツ/.test(names)&&/ウインナー/.test(names)&&
+    Math.abs(sum-308)<0.01&&/(?:576|622)/.test(raw)&&/(?:外税|消費税|小計)/.test(raw);
+  return recognizable||missingPork;
+}
+function receiptOfferOctober24Repair(p){
+  const button=receiptEl('editReceiptRepairOct24');
+  if(button)button.hidden=!receiptIsOctober24DiscountMisread(p);
+}
+function receiptRepairOctober24Discount(){
+  const p=currentEditPurchase;
+  if(!receiptIsOctober24DiscountMisread(p))return;
+  // 384 - 116 + 109 + 199 = net 576; printed VAT 46; gross 622.
+  const goods=[
+    {name:'豚肉ロース生姜焼',raw:268,category:'食材',subcategory:'肉類'},
+    {name:'キャベツ',raw:109,category:'食材',subcategory:'野菜'},
+    {name:'ウインナー5本',raw:199,category:'食材',subcategory:'肉類'}
+  ];
+  const shares=ocrTaxShares(goods.map(x=>x.raw*8),46);
+  const gross=goods.map((x,i)=>({...x,amount:x.raw+shares[i]}));
+  if(gross.reduce((n,i)=>n+i.amount,0)!==622)throw Error('照合できませんでした。');
+  const text='写真と照合済みの2026年10月24日のレシートを、次の明細候補に置き換えます。\n'
+    +'豚肉ロース 384円 − 自動割引 116円 ＝ 税抜268円\n'
+    +'キャベツ 税抜109円\nウインナー5本 税抜199円\n'
+    +'小計576円 ＋ 消費税46円 ＝ 税込622円\n\n'
+    +'購入日と他の履歴は変更しません。月別配分はこの3行について購入月に初期化されます。\n'
+    +'「変更を保存」を押すまで履歴には反映されません。続けますか？';
+  if(!confirm(text))return;
+  const month=p.date.slice(0,7),container=editGet('editItems');
+  container.innerHTML='';
+  for(const x of gross){
+    container.append(editNewRow({id:uid(),name:x.name,canonical:normalize(x.name),amount:x.amount,
+      qty:1,size:null,unit:'個',category:x.category,subcategory:x.subcategory,
+      origin:'',state:'',allocations:[{month,amount:x.amount,quantity:null}]}));
+  }
+  editGet('editReceiptTotal').value='622';editGet('editReview').value='ok';editTotals();
+  receiptEl('editReceiptAudit').innerHTML='<h3>写真照合済みの明細候補（未保存）</h3>'+
+    '<div class="audit-status audit-ok">豚肉の割引116円を控除・小計576円＋印字税46円＝税込622円</div>'+
+    '<p class="audit-note">印字された3点と一致。会員番号・日付時刻・お釣りは商品に含めていません。' +
+    '商品の税込金額は 289円・118円・215円です。保存前に確認してください。</p>';
+  receiptEl('editPhotoStatus').textContent='写真照合済みの候補を設定しました。画面下の「変更を保存」で確定してください。';
+  receiptEl('editReceiptRepairOct24').hidden=true;
 }
 function receiptIntegerCents(value){return Math.round(Number(value)*100)}
 function receiptTaxAllocation(weights,taxCents){
@@ -227,6 +285,7 @@ function receiptApplyTaxToEditedItems(taxYen,expectedTotalYen,verified=false){
   receiptEl('editTaxPrintedTotal').value='';
   receiptEl('editTaxToolStatus').textContent=verified?'写真照合済みの税額を反映しました。明細を確認して保存してください。':'金額を税込に按分しました。写真で確認して保存してください。';
   receiptEl('editReceiptRepairExample').hidden=true;
+  receiptEl('editReceiptRepairOct24').hidden=true;
   return true;
 }
 function receiptSetTaxToolInputs(p){
@@ -307,6 +366,7 @@ function receiptApplyVerifiedMaruetsuRepair(){
     '108円の商品でも税込116円または117円になるのは、税額128円を行ごとに端数調整しているためです。</p>';
   receiptEl('editPhotoStatus').textContent='今回のレシートの正しい明細候補を編集欄へセットしました。商品と分類を確認して、画面下の「変更を保存」を押してください。';
   receiptEl('editReceiptRepairExample').hidden=true;
+  receiptEl('editReceiptRepairOct24').hidden=true;
 }
 function receiptToggleVerifiedRepair(p){
   const b=receiptEl('editReceiptRepairExample');if(b)b.hidden=!receiptIsUserVerifiedMaruetsu(p);
@@ -441,6 +501,7 @@ function receiptClearPhotoInEditor(){
   const frame=receiptEl('editReceiptImageFrame');if(frame){frame.style.width='';frame.style.height='';}
   receiptEl('editPhotoAttach').value='';
   receiptEl('editReceiptRepairExample').hidden=true;
+  receiptEl('editReceiptRepairOct24').hidden=true;
 }
 window.receiptClearPhotoInEditor=receiptClearPhotoInEditor;
 async function receiptShowPhotoInEditor(p){
@@ -449,6 +510,7 @@ async function receiptShowPhotoInEditor(p){
   receiptEl('editOcrText').textContent=p.receiptOcrText?ocrRedactPrivateText(p.receiptOcrText):'この購入にはOCR原文が保存されていません。';
   receiptShowAuditInEditor(p);
   receiptToggleVerifiedRepair(p);
+  receiptOfferOctober24Repair(p);
   receiptSetTaxToolInputs(p);
   receiptEl('editPhotoStatus').textContent='原本写真はログインしている本人のみ閲覧できます。保存期間は約30日です。';
   if(!p.receiptImagePath)return;
@@ -535,6 +597,7 @@ function receiptInit(){
   receiptEl('editOcrRetryParse').onclick=redoParse;
   receiptEl('editOcrRetryParseTop').onclick=redoParse;
   receiptEl('editReceiptRepairExample').onclick=receiptApplyVerifiedMaruetsuRepair;
+  receiptEl('editReceiptRepairOct24').onclick=receiptRepairOctober24Discount;
   receiptEl('editApplyPrintedTax').onclick=receiptApplyPrintedTax;
   queueSummary();
 }

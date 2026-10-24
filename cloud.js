@@ -186,7 +186,7 @@ window.sbAttachReceiptImage=sbAttachReceiptImage;
 async function sbInsert(p){
   await sbPost('purchases',[{id:p.id,ledger_id:sbLedger,created_by:sbSession.user.id,
     purchased_at:p.date+'T12:00:00+09:00',store_name:p.merchant,source:p.source||'manual',
-    receipt_total:p.receiptTotal??p.items.reduce((sum,i)=>sum+Number(i.amount),0),
+    receipt_total:p.receiptTotal==null?null:Number(p.receiptTotal),
     receipt_fingerprint:p.receiptFingerprint||null,review_status:p.reviewStatus||'ok',
     receipt_image_path:p.receiptImagePath||null,receipt_image_uploaded_at:p.receiptImageUploadedAt||null,
     receipt_image_expires_at:p.receiptImageExpiresAt||null,receipt_ocr_text:p.receiptOcrText||null}]);

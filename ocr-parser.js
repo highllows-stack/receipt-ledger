@@ -40,7 +40,7 @@ function ocrNonItem(raw){
   if(!s||ocrIsReceiptMetadata(raw)||OCR_META_PREFIX.test(s)||OCR_SUMMARY_PREFIX.test(s))return true;
   if(/^(?:[%％]?\d{1,2}[%％]?対象|[\d.,￥¥円\s*※-]+)$/.test(s))return true;
   if(/(?:消費税|内税|外税|税額|税率|小計|合計|お預|お釣|お支払|クレジット|ポイント|クーポン|値引|割引|残高|請求金額|課税|対象額|対象商品|カード番号|会員番号|カードNo|会員No|取引No|精算|登録番号|インボイス)/i.test(s))return true;
-  if(/^(?:20\d{2}[/.年-]|\d{1,2}:\d{2}(?::\d{2})?$)/.test(s))return true;
+  if(/^(?:20\d{2}[/.年-]|\d{1,2}:\d{2}(?::\d{2})?$)/.test(s)||/(?:\d{1,2}月\d{1,2}日|年\d{1,2}月\d{1,2}日|(?:月|火|水|木|金|土|日)[)）]\d{1,2}[:：])/i.test(s)||/^(?:年)?\d{1,2}月\d{1,2}日/.test(s))return true;
   if(/^(?:\d[\d :\/-]{7,}|\d{8,}|\d{2,4}[-/]\d{1,2}[-/]\d{1,2})$/.test(s))return true;
   if(/^https?:|^www\.|^\(?\d{2,4}\)?[- ]\d{2,4}[- ]\d{3,4}$/i.test(s))return true;
   return false;
@@ -78,7 +78,7 @@ function ocrCandidate(raw){
   const m=s.match(OCR_PRICE_END);
   if(!m||m.index===0)return null;
   const label=s.slice(0,m.index).trim();
-  if(ocrIsReceiptMetadata(label))return null;
+  if(ocrIsReceiptMetadata(label)||/(?:\d{1,2}月\d{1,2}日|年\d{1,2}月\d{1,2}日|\d{1,2}[:：]\d{1,2})/.test(label))return null;
   const amount=ocrMoney(m[1]);
   if(!Number.isFinite(amount)||amount<=0||amount>999999)return null;
   const taxKind=ocrTaxKind(original),rate=ocrItemRate(original);
@@ -102,16 +102,56 @@ function ocrQuantityNote(raw,expectedAmount){
   if(Math.abs(unitPrice*qty-expectedAmount)>.01)return{qty:null,mismatch:true,price:unitPrice};
   return{qty,unit:m[3]||'個',price:unitPrice};
 }
+// Discounts belong to the preceding merchandise line. A store may omit
+// the minus sign in the OCR result, but an explicit discount label still means
+// subtracting from the product. Never invent a discount from an unlabeled price.
+function ocrDiscountLine(raw,nextRaw=''){
+  const text=ocrLine(raw);
+  const normalized=ocrCompact(text).replace(/^[★☆●◆・\s]+/,'');
+  if(!/(?:自動割引|特売値引|商品値引|お値引|値引|割引|クーポン値引|タイムサービス値引)/.test(normalized))return null;
+  // Payment/point settlement adjustments are not merchandise discounts.
+  if(/ポイント|支払|合計|小計|精算/.test(normalized))return null;
+  let signed=normalized.match(/[-−－ー]\s*[￥¥]?\s*(\d[\d,]*)\s*(?:円)?\s*[※＊*]?$/);
+  let value=signed?ocrMoney(signed[1]):null;
+  let explicitMinus=!!signed;
+  if(value===null){
+    const m=normalized.match(/(?:値引|割引)[^\n]*?[）)]?\s*[￥¥]?\s*(\d[\d,]*)\s*(?:円)?\s*[※＊*]?$/);
+    if(m)value=ocrMoney(m[1]);
+  }
+  let takesNext=false;
+  if((value===null||!Number.isFinite(value))&&nextRaw){
+    const n=ocrLine(nextRaw);
+    const m=n.match(/^\s*[-−－]?\s*[￥¥]?\s*(\d[\d,]*)\s*円?\s*$/);
+    if(m){value=ocrMoney(m[1]);takesNext=true;explicitMinus=/[-−－]/.test(n);}
+  }
+  if(!Number.isSafeInteger(value)||value<=0||value>999999)return null;
+  return{value,takesNext,explicitMinus,label:text};
+}
 function ocrParseItemLines(lines){
   const input=lines.map(x=>ocrLine(typeof x==='string'?x:x?.text)).filter(Boolean);
-  const items=[],ignored=[],notes=[];
-  // Strictly stop treating any later lines as merchandise once the checkout
-  // summary begins. This rejects point balances, cashier IDs and payment rows.
+  const items=[],ignored=[],notes=[],discounts=[];
   let summaryStarted=false;
   for(let i=0;i<input.length;i++){
     const s=input[i];
     if(ocrIsSummaryStart(s)||/^\d{1,3}\s*(?:点|品)\s*[￥¥]?\s*[\d,]+\s*(?:円)?$/.test(ocrCompact(s)))summaryStarted=true;
     if(summaryStarted){ignored.push(s);continue;}
+    const discount=ocrDiscountLine(s,input[i+1]);
+    if(discount){
+      ignored.push(s);
+      if(discount.takesNext){ignored.push(input[i+1]);i++;}
+      const previous=items.at(-1);
+      if(previous&&discount.value<=previous.rawAmount){
+        previous.discount=(previous.discount||0)+discount.value;
+        previous.rawAmount-=discount.value;
+        previous.amount=previous.rawAmount;
+        previous.discountLines=[...(previous.discountLines||[]),discount.label];
+        discounts.push({name:previous.name,amount:discount.value,line:discount.label,applied:true});
+      }else{
+        discounts.push({name:'未対応',amount:discount.value,line:discount.label,applied:false});
+        notes.push('値引き '+discount.value+'円を対象商品に紐づけられません。写真を確認してください。');
+      }
+      continue;
+    }
     if(ocrNonItem(s)){ignored.push(s);continue;}
     let item=ocrCandidate(s);
     if(!item&&ocrValidName(s)&&i+1<input.length){
@@ -137,7 +177,7 @@ function ocrParseItemLines(lines){
       items.push(item);
     }else ignored.push(s);
   }
-  return{items:items.slice(0,100),ignored,notes};
+  return{items:items.slice(0,100),ignored,notes,discounts};
 }
 function ocrFindDate(lines){
   const s=lines.join(' ');
@@ -148,23 +188,61 @@ function ocrFindDate(lines){
   return `${m[1]}-${m[2].padStart(2,'0')}-${m[3].padStart(2,'0')}`;
 }
 function ocrSummaryLabel(raw){return ocrCompact(raw).replace(/^[￥¥]/,'');}
+// A till receipt has three different money concepts: actual purchase total,
+// cash tendered, and change. A payment/tender number is never evidence of price.
+function ocrCashEvidence(lines){
+  const out={tender:null,change:null,payment:null};
+  for(let i=0;i<lines.length;i++){
+    const compact=ocrSummaryLabel(lines[i]).replace(/^[（(]/,'');
+    let type=null;
+    if(/^(?:お預り|お預かり|預り|預かり|お預|現金お預り)/.test(compact))type='tender';
+    else if(/^(?:お釣り|おつり|お釣|釣銭|お返し|つり銭)/.test(compact))type='change';
+    else if(/^(?:お支払|お支払い|支払金額)/.test(compact))type='payment';
+    if(!type)continue;
+    const value=ocrNearbyMoney(lines,i);
+    if(value!=null&&Number.isFinite(value)&&value>=0)out[type]=value;
+  }
+  return out;
+}
+function ocrPrintedNetAndTax(lines){
+  const subtotals=ocrFindSubtotals(lines);
+  const net=subtotals.find(x=>/^(?:小計|税抜小計|税別小計|本体価格計|商品小計)/.test(x.compact))||
+    subtotals.find(x=>/^(?:8|10)[%％](?:外税|税抜)?対象額/.test(x.compact));
+  const taxes=ocrFindTaxes(lines),tax=taxes.length?taxes.reduce((sum,t)=>sum+t.amount,0):null;
+  // This inference needs a separately labeled NET subtotal AND separately labeled tax.
+  return net&&tax!=null&&tax>=0?{total:net.amount+tax,net:net.amount,tax}:null;
+}
 function ocrFindTotal(lines){
   const candidates=[];
   for(let i=0;i<lines.length;i++){
     const s=ocrSummaryLabel(lines[i]);
-    if(/(?:小計|税抜|税別|本体|対象額|税額|内税|外税|税率|合計点数|売上合計)/.test(s))continue;
+    if(/(?:小計|税抜|税別|本体|対象額|税額|内税|外税|税率|合計点数|売上合計|お預|お釣|釣銭|ポイント)/.test(s))continue;
     let score=0;
     if(/^(?:総合計|税込合計|合計|お買上合計|お買い上げ合計|今回お買上合計)/.test(s))score=100;
     else if(/^(?:ご請求|請求金額|お会計|購入金額)/.test(s))score=85;
-    else if(/^(?:お支払|お支払い|支払金額)/.test(s))score=65;
+    else if(/^(?:お支払|お支払い|支払金額)/.test(s))score=50;
     else continue;
     let amount=ocrLastMoney(lines[i]);
     if((amount===null||!Number.isFinite(amount))&&lines[i+1]&&OCR_ONLY_PRICE.test(ocrLine(lines[i+1])))amount=ocrMoney(ocrLine(lines[i+1]).match(OCR_ONLY_PRICE)[1]);
     if(amount!==null&&Number.isFinite(amount)&&amount>0&&amount<10000000)candidates.push({amount,score,index:i,line:lines[i]});
   }
-  if(!candidates.length)return{amount:null,source:'',candidates:[]};
+  const cash=ocrCashEvidence(lines),netTax=ocrPrintedNetAndTax(lines);
+  const expectedFromCash=cash.tender!=null&&cash.change!=null&&cash.tender>=cash.change?cash.tender-cash.change:null;
   candidates.sort((a,b)=>b.score-a.score||b.index-a.index);
-  return{amount:candidates[0].amount,source:candidates[0].line,candidates};
+  const verified=candidates.find(c=>netTax&&Math.abs(c.amount-netTax.total)<=1)||
+    candidates.find(c=>expectedFromCash!=null&&Math.abs(c.amount-expectedFromCash)<=1);
+  if(verified)return{amount:verified.amount,source:verified.line,candidates,cash,netTax,verified:true};
+  const best=candidates[0];
+  if(!best)return{amount:null,source:'',candidates,cash,netTax,verified:false};
+  const looksLikeTender=(cash.tender!=null&&Math.abs(best.amount-cash.tender)<=1)||
+    (cash.change!=null&&netTax!=null&&Math.abs(best.amount-cash.change-netTax.total)<=1);
+  // When the alleged grand total contradicts the *separately printed* subtotal
+  // plus tax, prefer an explicit 'unreadable' status over the wrong cash tender.
+  if(looksLikeTender||(best.score<95&&netTax&&Math.abs(best.amount-netTax.total)>1))
+    return{amount:null,source:'合計候補が税抜小計・税額またはお預りと矛盾',candidates,cash,netTax,verified:false,rejected:best};
+  // 'お支払' can also mean tendered cash: never accept without other evidence.
+  if(best.score<80)return{amount:null,source:'支払額のため購入合計は未確定',candidates,cash,netTax,verified:false,rejected:best};
+  return{amount:best.amount,source:best.line,candidates,cash,netTax,verified:false};
 }
 function ocrNearbyMoney(lines,index){
   const onLine=ocrLastMoney(lines[index]);
@@ -313,7 +391,7 @@ function ocrTaxAudit(lines){
   const taxTotal=tax.length?tax.reduce((s,v)=>s+v.amount,0):null;
   return{tax,subtotals,subtotalNet,legend,taxTotal};
 }
-function ocrReconcile(items,allLines,totalInfo){
+function ocrReconcile(items,allLines,totalInfo,appliedDiscounts=[]){
   const evidence=ocrTaxAudit(allLines);
   const{tax,subtotals,legend,taxTotal}=evidence;
   items.forEach(i=>{i.hasReducedMarkLegend=legend.reducedMark;});
@@ -323,23 +401,34 @@ function ocrReconcile(items,allLines,totalInfo){
   const subtotalMatch=subtotals.some(x=>Math.abs(x.amount-rawSum)<=1);
   const printedTotal=totalInfo.amount;
   const discounts=ocrFindDiscounts(allLines);
+  const discountSum=appliedDiscounts.filter(d=>d.applied).reduce((v,d)=>v+d.amount,0);
+  const unresolvedDiscounts=appliedDiscounts.filter(d=>!d.applied);
   const allMarked=legend.reducedMark&&items.length>0&&items.every(i=>i.taxMark||i.taxRate===8);
   const explicitNet=items.some(i=>i.taxKind==='exclusive')||subtotals.some(i=>/税抜|税別|本体/.test(i.compact))||tax.some(i=>i.kind==='exclusive');
   const explicitGross=items.some(i=>i.taxKind==='inclusive')||subtotals.some(i=>/税込/.test(i.compact))||tax.some(i=>i.kind==='inclusive');
   const markInfo=items.filter(i=>i.taxMark).length;
   const r={mode:'unknown',status:'review',printedTotal,derivedTotal:null,effectiveTotal:printedTotal,totalSource:printedTotal!=null?'印字合計':'不明',subtotal:subtotals.find(x=>Math.abs(x.amount-rawSum)<=1)?.amount??subtotals.at(-1)?.amount??null,
     rawSum,itemSum:rawSum,observedTax:taxTotal,allocatedTax:0,difference:printedTotal==null?null:printedTotal-rawSum,
-    hasDiscounts:discounts.length>0,discountLines:discounts,explanations:[],taxLines:tax.map(x=>x.line),taxLegend:legend.text,
+    hasDiscounts:discounts.length>0,discountLines:discounts,discountSum,discountApplications:appliedDiscounts,explanations:[],taxLines:tax.map(x=>x.line),taxLegend:legend.text,
     markedItems:markInfo,rateBreakdown:[],ignoredCount:0,printedCount,parsedCount};
   const warn=x=>{if(!r.explanations.includes(x))r.explanations.push(x)};
+  if(totalInfo.rejected)warn('OCRの「'+totalInfo.rejected.amount+'円」は預り金・支払金の可能性があり、印字合計として採用しませんでした。');
   if(!items.length){warn('商品明細を抽出できませんでした。写真を確認してください。');return r;}
   if(legend.reducedMark)warn('※印は軽減税率対象という注記を検出しました。対象の商品行には8%を使用します。');
+  if(discountSum)warn('商品直下の値引き '+discountSum+'円を商品の税抜額から控除しました。');
   // If OCR could not recover the printed total, a validated net subtotal + printed
   // tax can be used as a PROVISIONAL effective total; never call it printed.
-  if(printedTotal==null&&subtotalMatch&&taxTotal!==null&&!explicitGross&&discounts.length===0){
-    r.derivedTotal=rawSum+taxTotal;r.effectiveTotal=r.derivedTotal;r.totalSource='税抜小計＋印字税額から計算（印字合計未検出）';
-    warn('合計の印字はOCRで検出できませんでした。税抜小計と印字税額による参考税込額です。写真で合計を確認してください。');
-  }else if(printedTotal==null&&subtotalMatch&&allMarked&&!explicitGross&&discounts.length===0){
+  if(printedTotal==null&&taxTotal!==null&&!explicitGross&&unresolvedDiscounts.length===0&&
+    (subtotalMatch||subtotals.some(s=>/^(?:小計|商品小計|税抜小計|税別小計|本体価格計)/.test(s.compact)))){
+    // Show provisional *receipt* total even if OCR missed one item.
+    // Do not change item prices or pretend the receipt has reconciled.
+    const printedNet=subtotals.find(s=>/^(?:小計|商品小計|税抜小計|税別小計|本体価格計)/.test(s.compact));
+    const basis=subtotalMatch?rawSum:printedNet.amount;
+    r.derivedTotal=basis+taxTotal;r.effectiveTotal=r.derivedTotal;
+    r.totalSource=subtotalMatch?'税抜小計＋印字税額から計算（印字合計未検出）':'印字小計＋税額から参考計算（商品明細に不足あり）';
+    warn('合計の印字はOCRで検出できませんでした。小計と印字税額から参考額を計算しました。写真で合計を確認してください。');
+    if(!subtotalMatch)warn('商品が読み落とされているため、この参考額に合わせて明細を自動補完しません。');
+  }else if(printedTotal==null&&subtotalMatch&&allMarked&&!explicitGross&&unresolvedDiscounts.length===0){
     const estimate=Math.floor(rawSum*.08);
     if(estimate>0){r.derivedTotal=rawSum+estimate;r.effectiveTotal=r.derivedTotal;r.totalSource='※印と8%から参考計算（印字税額・合計未検出）';
       warn('税額・合計の印字を検出できなかったため、※印に基づき8%を参考計算しました。写真で税額を確認してください。');}
@@ -356,7 +445,7 @@ function ocrReconcile(items,allLines,totalInfo){
     if(explicitNet)warn('明細と税込合計がすでに一致していますが、税抜を示す記載もあります。二重課税を避けました。');
     else warn('商品金額は印字合計と一致しています。税を二重加算しません。');
     if(Math.abs(rawDiff)>.01)warn('1円の差があります。端数処理を確認してください。');
-  }else if(target!=null&&rawDiff>0&&!explicitGross&&discounts.length===0&&
+  }else if(target!=null&&rawDiff>0&&!explicitGross&&unresolvedDiscounts.length===0&&
     ((taxProof&&(subtotalProof||markProof))||(markProof&&subtotalProof)||((explicitNet||subtotalMatch)&&taxLike))){
     r.mode=printedTotal==null?'exclusive-estimated':'exclusive';
     const split=ocrTaxDistribution(items,rawDiff,tax,legend);
@@ -405,7 +494,7 @@ function ocrReconcile(items,allLines,totalInfo){
   if(printedCount!=null&&printedCount!==parsedCount){r.status='review';warn(`レシートは${printedCount}点、抽出結果は${parsedCount}点です。商品数量を確認してください。`);}
   if(subtotals.length&&!subtotalMatch&&!(printedTotal!=null&&Math.abs(rawSum-printedTotal)<=1)){
     r.status='review';warn('商品金額と印字小計が一致しません。読み落とし・OCR誤りを確認してください。');}
-  if(discounts.length){r.status='review';warn('値引き・割引を検出しました。ポイント支払いとの違いを確認してください。');}
+  if(unresolvedDiscounts.length||(discounts.length&&!discountSum)){r.status='review';warn('値引き・割引が未対応の可能性があります。写真と税込合計を確認してください。');}
   if(explicitNet&&explicitGross){r.status='review';warn('税込・税抜の表記が混在しています。二重課税を避けるため写真で確認してください。');}
   return r;
 }
@@ -413,16 +502,26 @@ function ocrExtractReceipt(raw,layoutLines=[]){
   const textLines=String(raw||'').normalize('NFKC').replace(/[\r\u0000]/g,'').split('\n').map(ocrLine).filter(Boolean);
   const geoLines=Array.isArray(layoutLines)?layoutLines.slice(0,400).map(x=>ocrLine(typeof x==='string'?x:x?.text)).filter(Boolean):[];
   const totalInfo=ocrFindTotal(textLines.length?textLines:geoLines);
-  const total=totalInfo.amount??ocrFindTotal(geoLines).amount;
+  const layoutTotal=geoLines.length?ocrFindTotal(geoLines):null;
+  // If the main OCR found contradictory cash/tender, a layout candidate is accepted
+  // only if independent subtotal+tax evidence does not contradict it.
+  const candidateTotal=totalInfo.amount??layoutTotal?.amount??null;
+  const netEvidence=totalInfo.netTax||layoutTotal?.netTax;
+  const total=netEvidence&&candidateTotal!=null&&Math.abs(candidateTotal-netEvidence.total)>1?null:candidateTotal;
   const sources=[{label:'OCR文字列',lines:textLines,parsed:ocrParseItemLines(textLines)}];
   if(geoLines.length)sources.push({label:'文字の位置情報',lines:geoLines,parsed:ocrParseItemLines(geoLines)});
   const assessments=sources.map(src=>{
     const items=src.parsed.items.map(i=>({...i}));
-    const rec=ocrReconcile(items,[...textLines,...(src.label==='文字の位置情報'?geoLines:[])],{...totalInfo,amount:total});
+    const srcInfo=ocrFindTotal(src.lines);
+    const selectedInfo=srcInfo.amount!=null?srcInfo:totalInfo;
+    const rec=ocrReconcile(items,[...textLines,...(src.label==='文字の位置情報'?geoLines:[])],{...selectedInfo,amount:total},src.parsed.discounts);
     const delta=rec.difference===null?999999:Math.abs(rec.difference);
     const exact=rec.status==='match'&&delta===0;
     // More lines alone is not quality: strong preference for complete, reconciled receipts.
-    const score=(exact?10000:0)+(delta<=1?300:0)+items.length*10-Math.min(800,delta/2)-src.parsed.ignored.length*.01;
+    const completeCount=rec.printedCount==null?0:(rec.parsedCount===rec.printedCount?1000:-450*Math.abs(rec.printedCount-rec.parsedCount));
+    const netSubtotalMatch=rec.subtotal!=null&&Math.abs(rec.subtotal-rec.rawSum)<=1?800:rec.subtotal!=null?-400:0;
+    const score=(exact?10000:0)+(delta<=1?300:0)+completeCount+netSubtotalMatch+
+      items.length*10-Math.min(800,delta/2)-src.parsed.ignored.length*.01;
     return{src,items,rec,score};
   });
   assessments.sort((a,b)=>b.score-a.score);
@@ -437,5 +536,5 @@ function ocrExtractReceipt(raw,layoutLines=[]){
   if(!date)warnings.push('購入日が判別できませんでした');
   return{merchant:ocrMerchant(textLines.length?textLines:geoLines),date,total:rec.effectiveTotal,items:selected.items,warnings,
     rawLineCount:textLines.length,parsedSource:selected.src.label,lineSum:rec.itemSum,ignoredLines:selected.src.parsed.ignored.slice(0,60),
-    reconciliation:rec};
+    reconciliation:rec,discounts:selected.src.parsed.discounts};
 }
