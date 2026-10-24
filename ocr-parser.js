@@ -18,6 +18,31 @@ function ocrRedactPrivateText(raw){
     return line;
   }).join('\n');
 }
+// v2.0: keep OCR text AND its original Vision row layout for later free reanalysis.
+// Legacy purchases have plain text only and remain readable without migration.
+const OCR_EVIDENCE_TAG='receipt-evidence-v2';
+function ocrEvidenceUnpack(input,providedLayout=[]){
+  if(typeof input!=='string')return{text:String(input||''),layoutLines:providedLayout||[]};
+  if(input.startsWith('{"format":"'+OCR_EVIDENCE_TAG+'"')){
+    try{
+      const parsed=JSON.parse(input);
+      if(parsed.format===OCR_EVIDENCE_TAG&&typeof parsed.text==='string'){
+        const rows=Array.isArray(parsed.layoutLines)?parsed.layoutLines:[];
+        return{text:parsed.text,layoutLines:Array.isArray(providedLayout)&&providedLayout.length?providedLayout:rows};
+      }
+    }catch{/* Previously saved OCR text is still usable. */}
+  }
+  return{text:input,layoutLines:Array.isArray(providedLayout)?providedLayout:[]};
+}
+function ocrEvidenceText(input){return ocrEvidenceUnpack(input).text;}
+function ocrEvidenceStore(input,layoutLines=[]){
+  const text=ocrRedactPrivateText(String(input||'').slice(0,30000));
+  const rows=(Array.isArray(layoutLines)?layoutLines:[]).slice(0,400)
+    .map(row=>typeof row==='string'?{text:row}:row)
+    .filter(row=>typeof row?.text==='string'&&row.text.trim())
+    .map(row=>({text:ocrRedactPrivateText(row.text.slice(0,350)),top:Number.isFinite(Number(row.top))?Number(row.top):null}));
+  return rows.length?JSON.stringify({format:OCR_EVIDENCE_TAG,text,layoutLines:rows}):text;
+}
 function ocrMoney(s){const t=String(s??'').replace(/[￥¥円,，\s]/g,'');return /^(?:\d{1,9})(?:\.\d{1,2})?$/.test(t)?Number(t):NaN;}
 function ocrLastMoney(raw){const s=ocrLine(raw).replace(/[)）]\s*$/,'').trim(),m=s.match(OCR_PRICE_END);return m?ocrMoney(m[1]):null;}
 function ocrIsSummaryStart(raw){
@@ -231,18 +256,20 @@ function ocrFindTotal(lines){
   candidates.sort((a,b)=>b.score-a.score||b.index-a.index);
   const verified=candidates.find(c=>netTax&&Math.abs(c.amount-netTax.total)<=1)||
     candidates.find(c=>expectedFromCash!=null&&Math.abs(c.amount-expectedFromCash)<=1);
-  if(verified)return{amount:verified.amount,source:verified.line,candidates,cash,netTax,verified:true};
+  if(verified)return{amount:verified.amount,source:verified.line,candidates,cash,netTax,verified:true,cashDifference:expectedFromCash};
   const best=candidates[0];
-  if(!best)return{amount:null,source:'',candidates,cash,netTax,verified:false};
+  if(!best)return{amount:null,source:'',candidates,cash,netTax,verified:false,cashDifference:expectedFromCash};
   const looksLikeTender=(cash.tender!=null&&Math.abs(best.amount-cash.tender)<=1)||
     (cash.change!=null&&netTax!=null&&Math.abs(best.amount-cash.change-netTax.total)<=1);
-  // When the alleged grand total contradicts the *separately printed* subtotal
-  // plus tax, prefer an explicit 'unreadable' status over the wrong cash tender.
-  if(looksLikeTender||(best.score<95&&netTax&&Math.abs(best.amount-netTax.total)>1))
-    return{amount:null,source:'合計候補が税抜小計・税額またはお預りと矛盾',candidates,cash,netTax,verified:false,rejected:best};
+  // Even a line labelled '合計' may be a Vision error. Independent till arithmetic
+  // and separately printed tax always outrank an unverified extracted total.
+  const contradictsNet=netTax&&Math.abs(best.amount-netTax.total)>1;
+  const contradictsCash=expectedFromCash!==null&&Math.abs(best.amount-expectedFromCash)>1;
+  if(looksLikeTender||contradictsNet||contradictsCash)
+    return{amount:null,source:'合計候補が小計・税額・預り・釣銭と矛盾',candidates,cash,netTax,verified:false,rejected:best,cashDifference:expectedFromCash};
   // 'お支払' can also mean tendered cash: never accept without other evidence.
-  if(best.score<80)return{amount:null,source:'支払額のため購入合計は未確定',candidates,cash,netTax,verified:false,rejected:best};
-  return{amount:best.amount,source:best.line,candidates,cash,netTax,verified:false};
+  if(best.score<80)return{amount:null,source:'支払額のため購入合計は未確定',candidates,cash,netTax,verified:false,rejected:best,cashDifference:expectedFromCash};
+  return{amount:best.amount,source:best.line,candidates,cash,netTax,verified:false,cashDifference:expectedFromCash};
 }
 function ocrNearbyMoney(lines,index){
   const onLine=ocrLastMoney(lines[index]);
@@ -433,6 +460,14 @@ function ocrReconcile(items,allLines,totalInfo,appliedDiscounts=[]){
     if(estimate>0){r.derivedTotal=rawSum+estimate;r.effectiveTotal=r.derivedTotal;r.totalSource='※印と8%から参考計算（印字税額・合計未検出）';
       warn('税額・合計の印字を検出できなかったため、※印に基づき8%を参考計算しました。写真で税額を確認してください。');}
   }
+  if(r.effectiveTotal==null&&totalInfo.cashDifference!=null&&totalInfo.cashDifference>=0){
+    const cashTotal=totalInfo.cashDifference;
+    // Tender/change arithmetic is a receipt-wide hint, not permission to invent products.
+    // If the subtotal is independently present, keep it even with missing item lines.
+    r.derivedTotal=cashTotal;r.effectiveTotal=cashTotal;
+    r.totalSource='お預り−お釣りによる参考計算（合計印字のOCR未検出）';
+    warn('お預りとお釣りの差から税込'+cashTotal+'円を参考計算しました。印字合計は未確認です。');
+  }
   const target=r.effectiveTotal;
   const rawDiff=target==null?null:target-rawSum;
   const taxProof=taxTotal!=null&&rawDiff!=null&&Math.abs(taxTotal-rawDiff)<=1;
@@ -499,22 +534,24 @@ function ocrReconcile(items,allLines,totalInfo,appliedDiscounts=[]){
   return r;
 }
 function ocrExtractReceipt(raw,layoutLines=[]){
-  const textLines=String(raw||'').normalize('NFKC').replace(/[\r\u0000]/g,'').split('\n').map(ocrLine).filter(Boolean);
-  const geoLines=Array.isArray(layoutLines)?layoutLines.slice(0,400).map(x=>ocrLine(typeof x==='string'?x:x?.text)).filter(Boolean):[];
+  const evidence=ocrEvidenceUnpack(raw,layoutLines);
+  const textLines=String(evidence.text||'').normalize('NFKC').replace(/[\r\u0000]/g,'').split('\n').map(ocrLine).filter(Boolean);
+  const geoLines=Array.isArray(evidence.layoutLines)?evidence.layoutLines.slice(0,400).map(x=>ocrLine(typeof x==='string'?x:x?.text)).filter(Boolean):[];
+  const combinedLines=[...textLines,...geoLines];
   const totalInfo=ocrFindTotal(textLines.length?textLines:geoLines);
   const layoutTotal=geoLines.length?ocrFindTotal(geoLines):null;
-  // If the main OCR found contradictory cash/tender, a layout candidate is accepted
-  // only if independent subtotal+tax evidence does not contradict it.
-  const candidateTotal=totalInfo.amount??layoutTotal?.amount??null;
-  const netEvidence=totalInfo.netTax||layoutTotal?.netTax;
+  const combinedInfo=geoLines.length?ocrFindTotal(combinedLines):totalInfo;
+  // Choose independently verified amounts before any unverified OCR total.
+  const trustworthy=[totalInfo,layoutTotal,combinedInfo].find(info=>info?.verified&&info.amount!=null);
+  const candidateTotal=trustworthy?.amount??combinedInfo?.amount??null;
+  const netEvidence=combinedInfo?.netTax||totalInfo.netTax||layoutTotal?.netTax;
   const total=netEvidence&&candidateTotal!=null&&Math.abs(candidateTotal-netEvidence.total)>1?null:candidateTotal;
   const sources=[{label:'OCR文字列',lines:textLines,parsed:ocrParseItemLines(textLines)}];
   if(geoLines.length)sources.push({label:'文字の位置情報',lines:geoLines,parsed:ocrParseItemLines(geoLines)});
   const assessments=sources.map(src=>{
     const items=src.parsed.items.map(i=>({...i}));
-    const srcInfo=ocrFindTotal(src.lines);
-    const selectedInfo=srcInfo.amount!=null?srcInfo:totalInfo;
-    const rec=ocrReconcile(items,[...textLines,...(src.label==='文字の位置情報'?geoLines:[])],{...selectedInfo,amount:total},src.parsed.discounts);
+    const selectedInfo=trustworthy||combinedInfo||totalInfo;
+    const rec=ocrReconcile(items,combinedLines,{...selectedInfo,amount:total},src.parsed.discounts);
     const delta=rec.difference===null?999999:Math.abs(rec.difference);
     const exact=rec.status==='match'&&delta===0;
     // More lines alone is not quality: strong preference for complete, reconciled receipts.

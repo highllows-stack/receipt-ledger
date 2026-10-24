@@ -67,7 +67,7 @@ async function scanOne(file){
   if(parsed.reconciliation.status!=='match'&&!warnings.length)warnings.push('レシート合計・消費税の照合が必要です');
   const p={id:uid(),bookId:sbLedger,date:parsed.date||today(),merchant:parsed.merchant,
     source:'receipt',items,receiptTotal:parsed.total,receiptFingerprint:fingerprint,
-    reviewStatus:warnings.length?'needs_review':'ok',receiptOcrText:ocrRedactPrivateText(String(result.text||'').slice(0,30000))};
+    reviewStatus:warnings.length?'needs_review':'ok',receiptOcrText:ocrEvidenceStore(result.text||'',result.layoutLines||[])};
   // Persist the original compressed photo FIRST. A storage error cannot silently lose the evidence.
   const meta=await window.sbUploadReceiptImage(p.id,image.imageBase64);
   Object.assign(p,meta);
@@ -130,6 +130,7 @@ function receiptAuditHTML(parsed,purchase){
     </div><p class="audit-note">${esc(description)}。${a.observedTax!=null?'印字された税額 '+money(a.observedTax)+'。':''}${a.taxLegend?' '+esc(a.taxLegend)+'。':''}${a.derivedTotal!=null?' 推定税込合計 '+money(a.derivedTotal)+'（レシート印字合計は未確認）。':''}${a.discountSum?' 商品に紐づいた値引き '+money(a.discountSum)+' を控除済み。':''}</p>
     ${savedReceiptMismatch?`<p class="audit-saved-warning"><strong>保存済みのレシート合計 ${money(savedReceipt)} は、新しい照合の参考合計 ${money(a.effectiveTotal)} と異なります。</strong> 預り金などの誤認識の可能性があります。明細の再作成または写真照合済みの修正候補を確認し、最後に「変更を保存」してください。</p>`:''}
     ${changed?`<p class="audit-saved-warning">現在の保存済み明細 ${money(savedSum)} と、新解析 ${money(a.itemSum)} が異なります。**再作成**ボタンで候補を確認後に取り込めます（保存前は履歴に影響しません）。</p>`.replace(/\*\*(.*?)\*\*/g,'<strong>$1</strong>'):''}
+    ${a.printedCount!=null&&a.parsedCount<a.printedCount?'<p class="audit-saved-warning">OCR原文から読み落とされた商品は、無料再解析だけでは元に戻りません。写真から入力するか、下の「OCR原文の文字を訂正」で補ってください。</p>':''}
     ${details?`<ul class="audit-reasons">${details}</ul>`:''}
     ${parsed.items.length?`<details class="audit-ignored"><summary>商品ごとの税抜金額・加算税額・税込金額を確認</summary><div class="audit-table-wrap"><table class="audit-table"><thead><tr><th>商品</th><th>数量</th><th>税率・根拠</th><th>読取額</th><th>加算税</th><th>税込</th></tr></thead><tbody>${parsed.items.map(item=>`<tr><td>${esc(item.name)}</td><td>${item.qty||1}</td><td>${item.taxRateResolved?item.taxRateResolved+'%':'未確定'}<small>${esc(item.taxRateSource||'')}</small></td><td>${money(item.rawAmount)}</td><td>${money(item.taxAdded||0)}</td><td><strong>${money(item.amount)}</strong></td></tr>`).join('')}</tbody></table></div></details>`:''}
     ${excluded?`<details class="audit-ignored"><summary>商品として登録しなかった行を確認（${parsed.ignoredLines.length}行）</summary><ul>${excluded}</ul></details>`:''}`;
@@ -174,17 +175,22 @@ function receiptIsUserVerifiedMaruetsu(p){
 // the one-time rescue for the known incorrectly parsed October 24 receipt.
 function receiptIsOctober24DiscountMisread(p){
   if(!p||p.date!=='2026-10-24'||!/maruetsu|マルエツ/i.test(p.merchant||''))return false;
-  if(![2,3,4,5].includes(p.items?.length))return false;
-  const names=p.items.map(i=>i.name||'').join(' ');
+  if(!Array.isArray(p.items)||p.items.length<2||p.items.length>8)return false;
+  const names=p.items.map(i=>String(i.name||'')).join(' ');
   const sum=p.items.reduce((n,i)=>n+Number(i.amount||0),0);
-  const recognizable=/豚肉|生姜焼|ロース/.test(names)&&/キャベツ/.test(names)&&
-    (Math.abs(sum-704)<0.01||Math.abs(Number(p.receiptTotal)-704)<0.01);
-  // OCR occasionally drops the discounted pork completely. Offer the photo-verified
-  // rescue only for the known same-day receipt with exact 576 / 622 tax evidence.
-  const raw=String(p.receiptOcrText||'').replace(/\s/g,'');
-  const missingPork=p.items.length===2&&/キャベツ/.test(names)&&/ウインナー/.test(names)&&
-    Math.abs(sum-308)<0.01&&/(?:576|622)/.test(raw)&&/(?:外税|消費税|小計)/.test(raw);
-  return recognizable||missingPork;
+  // Avoid suggesting this exact-photo repair for a second unrelated purchase at
+  // the same shop/date. Require recognizable purchased items and known misread sums.
+  const hints=[/豚肉|生姜焼|ロース/.test(names),/キャベツ/.test(names),/ウインナー/.test(names)];
+  const hits=hints.filter(Boolean).length;
+  const badSum=[308,699,704,808,576,622].some(x=>Math.abs(sum-x)<.01);
+  const labels=/割引|値引|30[%％]/.test(names);
+  const raw=ocrEvidenceText(String(p.receiptOcrText||'')).replace(/\s/g,'');
+  const originalEvidence=/(?:576|622)/.test(raw)&&/(?:8[%％]|外税|合計|小計|割引)/.test(raw);
+  // Already-correct receipt needs no rescue.
+  const corrected=p.items.length===3&&Math.abs(sum-622)<.01&&
+    hints.every(Boolean)&&Math.abs(Number(p.receiptTotal)-622)<.01;
+  if(corrected)return false;
+  return hits>=2&&(badSum||labels||originalEvidence);
 }
 function receiptOfferOctober24Repair(p){
   const button=receiptEl('editReceiptRepairOct24');
@@ -481,8 +487,9 @@ async function receiptRerunOCRFromPhoto(){
     const parsed=ocrExtractReceipt(result?.text||'',result?.layoutLines||[]);
     if(!parsed.items.length){receiptEl('editPhotoStatus').textContent='再OCRから商品を見つけられませんでした。写真を見ながら手入力してください。';return;}
     receiptOCRFromRescan={purchaseId:currentEditPurchase.id,parsed};
-    currentEditPurchase.receiptOcrText=ocrRedactPrivateText(String(result.text||'').slice(0,30000));
-    receiptEl('editOcrText').textContent=currentEditPurchase.receiptOcrText;
+    currentEditPurchase.receiptOcrText=ocrEvidenceStore(result.text||'',result.layoutLines||[]);
+    receiptEl('editOcrText').textContent=ocrEvidenceText(currentEditPurchase.receiptOcrText);
+    receiptEl('editOcrEditable').value=ocrEvidenceText(currentEditPurchase.receiptOcrText);
     receiptEl('editReceiptAudit').innerHTML='<h3>レシート金額の照合（再OCR結果・未保存）</h3>'+receiptAuditHTML(parsed,currentEditPurchase);
     receiptEl('editPhotoStatus').textContent=`再OCRで${parsed.items.length}商品行・${parsed.reconciliation.parsedCount}点を検出しました。下の「OCR原文から明細を再作成」を押し、写真と照合して保存してください。`;
   }catch(e){receiptEl('editPhotoStatus').textContent='再OCRに失敗：'+e.message;}
@@ -500,6 +507,8 @@ function receiptClearPhotoInEditor(){
   receiptEl('editPhotoZoomValue').textContent='100%';
   const frame=receiptEl('editReceiptImageFrame');if(frame){frame.style.width='';frame.style.height='';}
   receiptEl('editPhotoAttach').value='';
+  receiptEl('editOcrEditable').value='';
+  receiptEl('editOcrCorrectionStatus').textContent='';
   receiptEl('editReceiptRepairExample').hidden=true;
   receiptEl('editReceiptRepairOct24').hidden=true;
 }
@@ -507,7 +516,8 @@ window.receiptClearPhotoInEditor=receiptClearPhotoInEditor;
 async function receiptShowPhotoInEditor(p){
   receiptClearPhotoInEditor();
   const seq=receiptPhotoOpenSeq;
-  receiptEl('editOcrText').textContent=p.receiptOcrText?ocrRedactPrivateText(p.receiptOcrText):'この購入にはOCR原文が保存されていません。';
+  receiptEl('editOcrText').textContent=p.receiptOcrText?ocrEvidenceText(p.receiptOcrText):'この購入にはOCR原文が保存されていません。';
+  receiptEl('editOcrEditable').value=ocrEvidenceText(p.receiptOcrText||'');
   receiptShowAuditInEditor(p);
   receiptToggleVerifiedRepair(p);
   receiptOfferOctober24Repair(p);
@@ -558,7 +568,8 @@ function receiptInit(){
   window.addEventListener('resize',()=>receiptApplyVisualRotation());
   const redoParse=()=>{
     if(!currentEditPurchase?.receiptOcrText)return receiptEl('editPhotoStatus').textContent='この購入には保存されたOCR原文がありません';
-    const parsed=(receiptOCRFromRescan?.purchaseId===currentEditPurchase.id?receiptOCRFromRescan.parsed:null)||ocrExtractReceipt(currentEditPurchase.receiptOcrText);
+    const selectedPreview=receiptOCRFromRescan?.purchaseId===currentEditPurchase.id?receiptOCRFromRescan:null;
+    const parsed=selectedPreview?.parsed||ocrExtractReceipt(currentEditPurchase.receiptOcrText);
     if(!parsed.items.length)return receiptEl('editPhotoStatus').textContent='原文から商品を特定できませんでした。写真を見ながら手動で明細を入力してください';
     const currentRows=editGet('editItems').children.length;
     const originalItems=currentEditPurchase.items||[];
@@ -589,10 +600,26 @@ function receiptInit(){
     const rows=editGet('editItems');rows.innerHTML='';
     prepared.forEach(({item})=>rows.append(editNewRow(item)));
     if(parsed.total!=null)editGet('editReceiptTotal').value=parsed.total;
+    if(selectedPreview?.correctedText!==undefined){
+      currentEditPurchase.receiptOcrText=ocrEvidenceStore(selectedPreview.correctedText);
+      receiptEl('editOcrText').textContent=ocrEvidenceText(currentEditPurchase.receiptOcrText);
+    }
     editGet('editReview').value=parsed.reconciliation.status==='match'?'ok':'needs_review';
     editTotals();
     receiptEl('editPhotoStatus').textContent=`明細を ${parsed.items.length}件に入れ替えました（${preserved}件は既存の月別配分を保持）。写真で品名・税率・税込金額と月別配分を確認してから「変更を保存」を押してください。`;
     receiptEl('editReceiptAudit').innerHTML='<h3>レシート金額の照合（新しい解析候補・未保存）</h3>'+receiptAuditHTML(parsed,{...currentEditPurchase,items:parsed.items});
+  };
+  receiptEl('editOcrCorrectPreview').onclick=()=>{
+    if(!currentEditPurchase)return;
+    const corrected=receiptEl('editOcrEditable').value.trim();
+    if(!corrected){receiptEl('editOcrCorrectionStatus').textContent='文字を入力してください。';return;}
+    try{
+      const parsed=ocrExtractReceipt(corrected);
+      if(!parsed.items.length){receiptEl('editOcrCorrectionStatus').textContent='商品候補を検出できませんでした。商品名と金額を一行に入力してみてください。';return;}
+      receiptOCRFromRescan={purchaseId:currentEditPurchase.id,parsed,correctedText:corrected};
+      receiptEl('editReceiptAudit').innerHTML='<h3>訂正したOCR原文の照合（まだ未保存）</h3>'+receiptAuditHTML(parsed,currentEditPurchase);
+      receiptEl('editOcrCorrectionStatus').textContent=`${parsed.items.length}明細・${parsed.reconciliation.parsedCount}点、税込候補 ${parsed.total==null?'不明':yen(parsed.total)}。内容を確認後、上の「税率・税込を自動判定して明細を再作成」を押してください。最後に「変更を保存」が必要です。`;
+    }catch(e){receiptEl('editOcrCorrectionStatus').textContent='再解析できません：'+e.message;}
   };
   receiptEl('editOcrRetryParse').onclick=redoParse;
   receiptEl('editOcrRetryParseTop').onclick=redoParse;
