@@ -276,23 +276,47 @@ function editMealRead(row,strict=true){
   if(total!==price){if(strict)throw Error('食事区分の配分合計を商品金額に一致させてください。');return null;}
   return amounts;
 }
+function editMealControls(root,readAmount,readInput,writeInput,onChange){
+  const actions=document.createElement('div');actions.className='meal-quick-actions';
+  actions.innerHTML=MEAL_TYPES.map(([key,label])=>`<button type="button" class="secondary meal-quick" data-meal="${key}">全額${label}にする</button>`).join('')+
+    '<button type="button" class="secondary meal-split-toggle" aria-expanded="false">金額・割合で分ける</button>';
+  const detail=document.createElement('div');detail.className='meal-split-detail';detail.hidden=true;
+  const setMeal=key=>{const amount=amountCents(readAmount());for(const [k] of MEAL_TYPES)writeInput(k,centsAmount(k===key?amount:0));onChange();updateSelection();};
+  const updateSelection=()=>{const total=amountCents(readAmount());actions.querySelectorAll('[data-meal]').forEach(b=>{const selected=MEAL_TYPES.every(([k])=>amountCents(readInput(k))===(k===b.dataset.meal?total:0));b.classList.toggle('meal-quick-selected',selected);b.setAttribute('aria-pressed',String(selected));});};
+  actions.querySelectorAll('[data-meal]').forEach(b=>b.addEventListener('click',()=>setMeal(b.dataset.meal)));
+  const toggle=actions.querySelector('.meal-split-toggle');
+  toggle.addEventListener('click',()=>{detail.hidden=!detail.hidden;toggle.setAttribute('aria-expanded',String(!detail.hidden));toggle.textContent=detail.hidden?'金額・割合で分ける':'配分入力を閉じる';});
+  const ratios=document.createElement('div');ratios.className='meal-ratios';
+  ratios.innerHTML='<span class="muted">割合で配分（%）</span>'+MEAL_TYPES.map(([k,label])=>`<label>${label}<input type="number" min="0" max="100" step="0.01" class="meal-ratio-${k}" placeholder="0"></label>`).join('')+'<button type="button" class="secondary meal-ratio-apply">割合を反映</button>';
+  ratios.querySelector('.meal-ratio-apply').addEventListener('click',()=>{
+    const values=MEAL_TYPES.map(([k])=>Number(ratios.querySelector('.meal-ratio-'+k).value||0));
+    if(values.some(n=>!Number.isFinite(n)||n<0||n>100)||Math.abs(values.reduce((a,b)=>a+b,0)-100)>0.000001){alert('割合の合計を100%にしてください。');return;}
+    const total=amountCents(readAmount()),cents=distributeCents(total,values);
+    MEAL_TYPES.forEach(([key],i)=>writeInput(key,centsAmount(cents[i])));onChange();updateSelection();
+  });
+  detail.append(ratios);
+  root.prepend(actions);root.append(detail);
+  return {detail,updateSelection};
+}
 function editMealPanel(row,item){
   const values=mealAmounts(item);
   const panel=document.createElement('section');panel.className='meal-allocation-panel';
-  panel.innerHTML='<h4>食事区分への金額配分</h4><p class="muted">未設定なら全額を夕食用に計上します。</p><div class="meal-allocation-inputs">'+
+  panel.innerHTML='<h4>食事区分への金額配分</h4><p class="muted">ボタンを押すだけで全額指定できます。何も設定しなければ夕食用です。</p><div class="meal-split-fields"><div class="meal-allocation-inputs">'+
     MEAL_TYPES.map(([key,name])=>`<label>${name}（円）<input type="number" min="0" step="0.01" class="meal-${key}" value="${Number(values[key]||0)}"></label>`).join('')+
-    '</div><button type="button" class="secondary meal-rest-dinner">残額を夕食用に入れる</button><p class="meal-validation muted"></p>';
+    '</div><button type="button" class="secondary meal-rest-dinner">残額を夕食用に入れる</button></div><p class="meal-validation muted"></p>';
   row.querySelector('.account-panel').after(panel);
-  panel.querySelectorAll('input').forEach(el=>el.addEventListener('input',()=>editMealRead(row,false)));
+  const controls=editMealControls(panel,()=>row.querySelector('.e-amount').value,key=>row.querySelector('.meal-'+key).value,(key,value)=>{row.querySelector('.meal-'+key).value=value;},()=>editMealRead(row,false));
+  controls.detail.prepend(panel.querySelector('.meal-split-fields'));
+  panel.querySelectorAll('.meal-split-fields input').forEach(el=>el.addEventListener('input',()=>{editMealRead(row,false);controls.updateSelection();}));
   panel.querySelector('.meal-rest-dinner').addEventListener('click',()=>{
     const amount=amountCents(row.querySelector('.e-amount').value);
     const morning=amountCents(row.querySelector('.meal-breakfast').value);
     const lunch=amountCents(row.querySelector('.meal-lunch').value);
     row.querySelector('.meal-dinner').value=String(centsAmount(Math.max(0,amount-morning-lunch)));
-    editMealRead(row,false);
+    editMealRead(row,false);controls.updateSelection();
   });
   row.querySelector('.e-amount').addEventListener('input',()=>editMealRead(row,false));
-  editMealRead(row,false);
+  editMealRead(row,false);controls.updateSelection();
 }
 function editNewRow(item={}){
   const wrap=document.createElement('section');
@@ -480,7 +504,7 @@ function editCategoryRender(){
     const minor=source.querySelector('.e-subcategory').value;
     const card=document.createElement('section');card.className='category-only-item';
     card.innerHTML=`<div class="category-only-product"><strong>${index+1}. ${esc(name)}</strong><span>${yen(amount)}</span></div><div class="category-only-selects"><label>大分類<select class="category-only-major">${editOptions(Object.keys(GROUPS),major)}</select></label><label>小分類<select class="category-only-minor">${editOptions(GROUPS[major]||GROUPS['その他'],minor)}</select></label></div>
-      <div class="category-meal"><strong>食事区分（円）</strong><div class="meal-allocation-inputs">${MEAL_TYPES.map(([key,label])=>`<label>${label}<input type="number" min="0" step="0.01" class="category-meal-${key}" value="${source.querySelector('.meal-'+key).value}"></label>`).join('')}</div><button type="button" class="secondary category-meal-rest">残額を夕食へ</button><span class="category-meal-note muted"></span></div>`;
+      <div class="category-meal"><strong>食事区分</strong><div class="category-meal-fields"><div class="meal-allocation-inputs">${MEAL_TYPES.map(([key,label])=>`<label>${label}（円）<input type="number" min="0" step="0.01" class="category-meal-${key}" value="${source.querySelector('.meal-'+key).value}"></label>`).join('')}</div><button type="button" class="secondary category-meal-rest">残額を夕食へ</button></div><span class="category-meal-note muted"></span></div>`;
     const majorSelect=card.querySelector('.category-only-major');
     const minorSelect=card.querySelector('.category-only-minor');
     majorSelect.addEventListener('change',()=>{
@@ -498,14 +522,16 @@ function editCategoryRender(){
       const valid=editMealRead(source,false);
       card.querySelector('.category-meal-note').textContent=valid?'配分合計が一致しています。':'食事区分の金額合計を商品金額に合わせてください。';
     };
-    card.querySelectorAll('.category-meal input').forEach(input=>input.addEventListener('input',syncMeal));
+    const controls=editMealControls(card.querySelector('.category-meal'),()=>amount,key=>card.querySelector('.category-meal-'+key).value,(key,value)=>{card.querySelector('.category-meal-'+key).value=value;},syncMeal);
+    controls.detail.prepend(card.querySelector('.category-meal-fields'));
+    card.querySelectorAll('.category-meal-fields input').forEach(input=>input.addEventListener('input',()=>{syncMeal();controls.updateSelection();}));
     card.querySelector('.category-meal-rest').addEventListener('click',()=>{
       const morning=amountCents(card.querySelector('.category-meal-breakfast').value);
       const lunch=amountCents(card.querySelector('.category-meal-lunch').value);
       card.querySelector('.category-meal-dinner').value=String(centsAmount(Math.max(0,amountCents(amount)-morning-lunch)));
-      syncMeal();
+      syncMeal();controls.updateSelection();
     });
-    syncMeal();
+    syncMeal();controls.updateSelection();
     panel.append(card);
   });
 }
@@ -674,7 +700,7 @@ function editInit(){
   const form=editGet('editItems').closest('.receipt-editor-form');
   const switcher=document.createElement('div');switcher.className='category-editor-switch';
   switcher.innerHTML='<strong>編集方法</strong><div><button type="button" id="editDetailButton" class="secondary" aria-pressed="true">詳細編集</button><button type="button" id="editCategoryOnlyButton" class="secondary" aria-pressed="false">カテゴリー・食事区分だけ編集</button></div>';
-  editGet('editItems').before(switcher);
+  form.prepend(switcher);
   const categoryPanel=document.createElement('section');categoryPanel.id='editCategoryOnlyList';categoryPanel.className='category-only-list';categoryPanel.hidden=true;
   editGet('editItems').before(categoryPanel);
   editGet('editDetailButton').addEventListener('click',()=>editSetCategoryOnly(false));

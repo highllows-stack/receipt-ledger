@@ -112,10 +112,11 @@ let foodSlices=[];
 const DASHBOARD_PIE_COLORS=['#23836c','#db8e40','#6188bd','#b96f92','#8375b5','#6c9b42','#d26e5e','#4f91a2','#b2a03c','#956c56','#537e5a','#a36da4'];
 function categoryColor(index){return DASHBOARD_PIE_COLORS[index%DASHBOARD_PIE_COLORS.length]}
 function chartPrefsRead(){
+  if(!$('pieCategoryLevel').querySelector('option[value="meal"]'))$('pieCategoryLevel').add(new Option('食事区分（朝食・昼食・夕食）','meal'));
   try{
     if(localStorage.getItem(DASHBOARD_CHART_KEY)==='pie')dashboardChartView='pie';
     const level=localStorage.getItem(DASHBOARD_PIE_LEVEL_KEY);
-    if(level==='minor')$('pieCategoryLevel').value='minor';
+    if(level==='minor'||level==='meal')$('pieCategoryLevel').value=level;
   }catch{}
   chartButtonsUpdate();
 }
@@ -223,7 +224,11 @@ function pieDataForRows(rows,level){
 }
 function renderCategoryPie(rows,month,mode){
   const level=$('pieCategoryLevel').value;
-  const entries=pieDataForRows(rows,level),total=entries.reduce((sum,[,value])=>sum+value,0);
+  const mealChart=level==='meal';
+  const mealTotals=[0,0,0];
+  if(mealChart)rows.filter(r=>FOOD_MAJORS.includes(r.item.category)).forEach(r=>mealPortionCents(r.item,r.amount).forEach((amount,i)=>mealTotals[i]+=amount));
+  const entries=mealChart?MEAL_TYPES.map(([,label],i)=>[label,mealTotals[i]]).filter(([,amount])=>amount>0):pieDataForRows(rows,level);
+  const total=entries.reduce((sum,[,value])=>sum+value,0);
   if(total===0){$('categoryPieContent').innerHTML='<div class="empty">円グラフに表示する支出がありません。</div>';return}
   let acc=0;
   const slices=entries.map(([label,value],index)=>{
@@ -237,9 +242,9 @@ function renderCategoryPie(rows,month,mode){
   const legend=slices.map(s=>{
     const body=`<span class="pie-swatch" style="background:${s.color}" aria-hidden="true"></span><span class="pie-name">${esc(s.label)}</span><span class="pie-amount">${yen(centsAmount(s.value))}</span><strong class="pie-percent">${s.percent.toFixed(1)}%</strong>`;
     const major=level==='minor'?s.label.split(' / ')[0]:s.label;
-    return FOOD_MAJORS.includes(major)?`<button type="button" class="pie-legend-row pie-legend-link" data-food-major="${esc(major)}" title="食費の内訳を表示">${body}<span class="food-next" aria-hidden="true">›</span></button>`:`<div class="pie-legend-row">${body}</div>`;
+    return !mealChart&&FOOD_MAJORS.includes(major)?`<button type="button" class="pie-legend-row pie-legend-link" data-food-major="${esc(major)}" title="食費の内訳を表示">${body}<span class="food-next" aria-hidden="true">›</span></button>`:`<div class="pie-legend-row">${body}</div>`;
   }).join('');
-  $('categoryPieContent').innerHTML=`<div class="pie-chart" style="background:conic-gradient(from -90deg,${gradient})" role="img" aria-label="${esc(label)}"></div><div class="pie-legend"><p class="pie-sum">支出合計 <strong>${yen(centsAmount(total))}</strong></p>${legend}</div>`;
+  $('categoryPieContent').innerHTML=`<div class="pie-chart" style="background:conic-gradient(from -90deg,${gradient})" role="img" aria-label="${esc(label)}"></div><div class="pie-legend"><p class="pie-sum">${mealChart?'食費合計':'支出合計'} <strong>${yen(centsAmount(total))}</strong></p>${legend}</div>`;
   $('categoryPieContent').querySelectorAll('[data-food-major]').forEach(b=>b.onclick=()=>showFoodMajor(b.dataset.foodMajor));
   if(level==='major'){
     const segments=$('categoryPieContent').querySelector('.pie-chart');

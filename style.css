@@ -229,6 +229,15 @@ button.chart-mode-button.selected{background:#1d6c54;color:#fff;box-shadow:0 1px
 .meal-allocation-inputs label{min-width:0;font-size:12px}
 .meal-allocation-inputs input{width:100%;min-width:0}
 .meal-validation{margin:8px 0 0;font-size:12px}
+.meal-quick-actions{display:flex;flex-wrap:wrap;gap:7px;margin:10px 0}
+.meal-quick-actions button{font-size:12px;padding:8px 10px}
+.meal-quick-actions .meal-quick-selected{background:#184d42;color:#fff;border-color:#184d42}
+.meal-split-detail{padding:10px;background:#eef6f1;border-radius:8px;margin:8px 0}
+.meal-split-detail[hidden]{display:none!important}
+.meal-ratios{display:flex;align-items:end;flex-wrap:wrap;gap:8px;margin-top:12px;border-top:1px solid #d4e4db;padding-top:10px}
+.meal-ratios>span{width:100%}
+.meal-ratios label{flex:1 1 90px;font-size:12px;min-width:0}
+.meal-ratios input{width:100%}
 .category-meal{margin-top:10px;padding-top:10px;border-top:1px solid #dce8e0}
 .category-meal>strong{font-size:13px}
 .category-meal-note{display:block;margin-top:7px;font-size:12px}
