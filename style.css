@@ -242,6 +242,11 @@ button.chart-mode-button.selected{background:#1d6c54;color:#fff;box-shadow:0 1px
 .category-meal>strong{font-size:13px}
 .category-meal-note{display:block;margin-top:7px;font-size:12px}
 .meal-summary{margin:14px 0}
+.meal-pie-details{grid-column:1/-1;width:100%;padding:14px;border:1px solid #c5d6ce;border-radius:10px;background:#f7fbf8}
+.meal-pie-detail-head{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:8px}
+.meal-pie-detail-head h4{margin:0}
+.meal-pie-details .allocated-line{background:#fff}
+.pie-legend-link[aria-pressed="true"]{background:#dff2e8;border-color:#a6ceba}
 .meal-summary-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
 .meal-summary-grid>div{display:flex;flex-direction:column;gap:4px;padding:12px;background:#f4faf7;border-radius:10px}
 .meal-summary-grid strong{font-size:18px;overflow-wrap:anywhere}

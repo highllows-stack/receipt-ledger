@@ -108,6 +108,7 @@ const DASHBOARD_PIE_LEVEL_KEY='receipt-ledger-pie-level-v07';
 let dashboardChartView='bar';
 const FOOD_MAJORS=['食材','調味料','食品・飲料'];
 let foodDrillSub=null;
+let selectedMealDetail=null;
 let foodSlices=[];
 const DASHBOARD_PIE_COLORS=['#23836c','#db8e40','#6188bd','#b96f92','#8375b5','#6c9b42','#d26e5e','#4f91a2','#b2a03c','#956c56','#537e5a','#a36da4'];
 function categoryColor(index){return DASHBOARD_PIE_COLORS[index%DASHBOARD_PIE_COLORS.length]}
@@ -225,6 +226,7 @@ function pieDataForRows(rows,level){
 function renderCategoryPie(rows,month,mode){
   const level=$('pieCategoryLevel').value;
   const mealChart=level==='meal';
+  if(!mealChart)selectedMealDetail=null;
   const mealTotals=[0,0,0];
   if(mealChart)rows.filter(r=>FOOD_MAJORS.includes(r.item.category)).forEach(r=>mealPortionCents(r.item,r.amount).forEach((amount,i)=>mealTotals[i]+=amount));
   const entries=mealChart?MEAL_TYPES.map(([,label],i)=>[label,mealTotals[i]]).filter(([,amount])=>amount>0):pieDataForRows(rows,level);
@@ -242,10 +244,27 @@ function renderCategoryPie(rows,month,mode){
   const legend=slices.map(s=>{
     const body=`<span class="pie-swatch" style="background:${s.color}" aria-hidden="true"></span><span class="pie-name">${esc(s.label)}</span><span class="pie-amount">${yen(centsAmount(s.value))}</span><strong class="pie-percent">${s.percent.toFixed(1)}%</strong>`;
     const major=level==='minor'?s.label.split(' / ')[0]:s.label;
-    return !mealChart&&FOOD_MAJORS.includes(major)?`<button type="button" class="pie-legend-row pie-legend-link" data-food-major="${esc(major)}" title="食費の内訳を表示">${body}<span class="food-next" aria-hidden="true">›</span></button>`:`<div class="pie-legend-row">${body}</div>`;
+    if(mealChart)return `<button type="button" class="pie-legend-row pie-legend-link" data-meal-detail="${esc(s.label)}" aria-pressed="${selectedMealDetail===s.label}" title="${esc(s.label)}の商品内訳を表示">${body}<span class="food-next" aria-hidden="true">›</span></button>`;
+    return FOOD_MAJORS.includes(major)?`<button type="button" class="pie-legend-row pie-legend-link" data-food-major="${esc(major)}" title="食費の内訳を表示">${body}<span class="food-next" aria-hidden="true">›</span></button>`:`<div class="pie-legend-row">${body}</div>`;
   }).join('');
-  $('categoryPieContent').innerHTML=`<div class="pie-chart" style="background:conic-gradient(from -90deg,${gradient})" role="img" aria-label="${esc(label)}"></div><div class="pie-legend"><p class="pie-sum">${mealChart?'食費合計':'支出合計'} <strong>${yen(centsAmount(total))}</strong></p>${legend}</div>`;
+  const mealDetail=mealChart&&selectedMealDetail?(()=>{
+    const mealIndex=MEAL_TYPES.findIndex(([,name])=>name===selectedMealDetail);
+    if(mealIndex<0)return '';
+    const itemRows=rows.filter(r=>FOOD_MAJORS.includes(r.item.category)).map(r=>({...r,mealAmount:mealPortionCents(r.item,r.amount)[mealIndex]})).filter(r=>r.mealAmount>0).sort((a,b)=>b.mealAmount-a.mealAmount);
+    const detailTotal=itemRows.reduce((sum,r)=>sum+r.mealAmount,0);
+    return `<section class="meal-pie-details"><div class="meal-pie-detail-head"><h4>${esc(selectedMealDetail)}の商品内訳（${itemRows.length}明細・${yen(centsAmount(detailTotal))}）</h4><button type="button" class="secondary" id="closeMealDetail">内訳を閉じる</button></div>${itemRows.map(r=>`<div class="allocated-line"><div><strong>${esc(r.item.name)}</strong><small>${esc(r.purchase.merchant||'購入先不明')} · ${esc(r.purchase.date||'')} · ${esc(r.item.category||'その他')} ＞ ${esc(r.item.subcategory||'未分類')}</small></div><strong>${yen(centsAmount(r.mealAmount))}</strong></div>`).join('')||'<div class="empty">この区分の商品はありません。</div>'}</section>`;
+  })():'';
+  $('categoryPieContent').innerHTML=`<div class="pie-chart" style="background:conic-gradient(from -90deg,${gradient})" role="img" aria-label="${esc(label)}"></div><div class="pie-legend"><p class="pie-sum">${mealChart?'食費合計':'支出合計'} <strong>${yen(centsAmount(total))}</strong></p>${legend}</div>${mealDetail}`;
   $('categoryPieContent').querySelectorAll('[data-food-major]').forEach(b=>b.onclick=()=>showFoodMajor(b.dataset.foodMajor));
+  if(mealChart){
+    const choose=mealName=>{selectedMealDetail=selectedMealDetail===mealName?null:mealName;renderCategoryPie(rows,month,mode)};
+    $('categoryPieContent').querySelectorAll('[data-meal-detail]').forEach(b=>b.onclick=()=>choose(b.dataset.mealDetail));
+    $('categoryPieContent').querySelector('#closeMealDetail')?.addEventListener('click',()=>choose(selectedMealDetail));
+    const segments=$('categoryPieContent').querySelector('.pie-chart');
+    segments.classList.add('interactive-pie');
+    segments.title='円グラフの扇形を押すと、その食事区分の商品内訳を表示します';
+    segments.addEventListener('click',e=>{const picked=pieSegmentAtClick(e,slices.map(s=>({...s,name:s.label})));if(picked)choose(picked.label)});
+  }
   if(level==='major'){
     const segments=$('categoryPieContent').querySelector('.pie-chart');
     segments.classList.add('interactive-pie');
