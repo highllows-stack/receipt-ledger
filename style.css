@@ -242,6 +242,14 @@ button.chart-mode-button.selected{background:#1d6c54;color:#fff;box-shadow:0 1px
 .category-meal>strong{font-size:13px}
 .category-meal-note{display:block;margin-top:7px;font-size:12px}
 .meal-summary{margin:14px 0}
+.food-scope-label[hidden]{display:none!important}
+.combined-pie-subjects{margin:12px 0 16px;padding:12px;border:1px solid #c5d6ce;border-radius:10px;background:#f7fbf8}
+.combined-pie-head{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap}
+.combined-pie-head>div{display:flex;gap:7px;flex-wrap:wrap}
+.combined-pie-options{display:flex;flex-wrap:wrap;gap:8px 15px;margin:12px 0}
+.combined-pie-options label{display:inline-flex;align-items:center;gap:6px;padding:6px 9px;background:#fff;border:1px solid #d5e4db;border-radius:8px;font-size:13px;cursor:pointer}
+.combined-pie-options input{width:auto;min-width:auto;margin:0}
+.combined-pie-subjects p{margin:8px 0 0;font-size:12px}
 .meal-pie-details{grid-column:1/-1;width:100%;padding:14px;border:1px solid #c5d6ce;border-radius:10px;background:#f7fbf8}
 .meal-pie-detail-head{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:8px}
 .meal-pie-detail-head h4{margin:0}

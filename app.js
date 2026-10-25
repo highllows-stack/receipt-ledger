@@ -1,6 +1,6 @@
 'use strict';
 const KEY='receipt-ledger-data-v1';
-const GROUPS={'食材':['肉類','魚介類','野菜','果物','米・麺類','卵・乳製品','豆製品','その他'],'調味料':['基本調味料','油・ドレッシング','香辛料','料理の素','その他'],'食品・飲料':['惣菜・弁当','冷凍食品','インスタント食品','デザート・ヨーグルト','おやつ・間食','菓子','飲料','その他'],'日用品':['洗剤','掃除用品','衛生用品','キッチン用品','消耗品','その他'],'家具・家電':['家具','家電','PC・周辺機器','インテリア','その他'],'衣類・美容':['衣類','スキンケア','ヘアケア','理美容用品','その他'],'その他':['趣味','医薬品','雑貨','その他','未分類']};
+const GROUPS={'食材':['肉類','魚介類','野菜','果物','米・麺類','卵・乳製品','豆製品','その他'],'調味料':['基本調味料','油・ドレッシング','香辛料','料理の素','その他'],'食品・飲料':['惣菜・弁当','冷凍食品','インスタント食品','デザート・ヨーグルト','おやつ・間食','菓子','飲料','その他'],'外食':['レストラン','ファストフード','カフェ・喫茶','麺類・ラーメン','テイクアウト','その他'],'日用品':['洗剤','掃除用品','衛生用品','キッチン用品','消耗品','その他'],'家具・家電':['家具','家電','PC・周辺機器','インテリア','その他'],'衣類・美容':['衣類','スキンケア','ヘアケア','理美容用品','その他'],'その他':['趣味','医薬品','雑貨','その他','未分類']};
 const DEFAULT={schemaVersion:1,books:[{id:'personal',name:'個人用',kind:'personal'},{id:'shared',name:'共有用（この端末内）',kind:'shared'}],activeBook:'personal',purchases:[],aliases:{}};
 const $=id=>document.getElementById(id);const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));const yen=n=>'¥'+Number(n||0).toLocaleString('ja-JP');const uid=()=>crypto.randomUUID?.()||Date.now().toString(36)+Math.random().toString(36).slice(2);const today=()=>new Date().toLocaleDateString('sv-SE');
 let state;try{state=JSON.parse(localStorage.getItem(KEY))||structuredClone(DEFAULT)}catch{state=structuredClone(DEFAULT)}if(!Array.isArray(state.books)||!Array.isArray(state.purchases))state=structuredClone(DEFAULT);state.aliases||={};state.learnedRules||=[];let pendingImages=[];
@@ -106,13 +106,15 @@ function installDatePickerWholeField(){
 const DASHBOARD_CHART_KEY='receipt-ledger-chart-view-v07';
 const DASHBOARD_PIE_LEVEL_KEY='receipt-ledger-pie-level-v07';
 let dashboardChartView='bar';
-const FOOD_MAJORS=['食材','調味料','食品・飲料'];
+const FOOD_MAJORS=['食材','調味料','食品・飲料','外食'];
+let combinedPieMajors=new Set(FOOD_MAJORS);
 let foodDrillSub=null;
 let selectedMealDetail=null;
 let foodSlices=[];
 const DASHBOARD_PIE_COLORS=['#23836c','#db8e40','#6188bd','#b96f92','#8375b5','#6c9b42','#d26e5e','#4f91a2','#b2a03c','#956c56','#537e5a','#a36da4'];
 function categoryColor(index){return DASHBOARD_PIE_COLORS[index%DASHBOARD_PIE_COLORS.length]}
 function chartPrefsRead(){
+  initCombinedPieChoices();
   if(!$('pieCategoryLevel').querySelector('option[value="meal"]'))$('pieCategoryLevel').add(new Option('食事区分（朝食・昼食・夕食）','meal'));
   try{
     if(localStorage.getItem(DASHBOARD_CHART_KEY)==='pie')dashboardChartView='pie';
@@ -138,11 +140,36 @@ function setChartView(view){
 // These choices are presentation only: no changes to purchase records or cloud data.
 function showFoodMajor(major){
   if(!FOOD_MAJORS.includes(major))return;
-  $('foodScope').value=major;
+  combinedPieMajors=new Set([major]);
+  syncCombinedPieChoices();
   foodDrillSub=null;
   renderDashboard();
   $('foodBreakdownCard').scrollIntoView({behavior:'smooth',block:'start'});
   $('foodBreakdownCard').focus({preventScroll:true});
+}
+function syncCombinedPieChoices(){
+  const root=$('combinedPieSubjects');if(!root)return;
+  root.querySelectorAll('input[data-subject]').forEach(input=>{input.checked=combinedPieMajors.has(input.dataset.subject)});
+  const summary=$('combinedPieSelection');if(summary)summary.textContent=combinedPieMajors.size?`選択中：${[...combinedPieMajors].join('・')}`:'科目が選択されていません。';
+}
+function initCombinedPieChoices(){
+  const card=$('foodBreakdownCard');
+  card.querySelector('.food-scope-label').hidden=true;
+  const control=document.createElement('section');control.id='combinedPieSubjects';control.className='combined-pie-subjects';
+  control.innerHTML='<div class="combined-pie-head"><strong>同じ円グラフに集計する大分類</strong><div><button type="button" class="secondary" data-subject-preset="food">食費全体</button><button type="button" class="secondary" data-subject-preset="all">全科目</button></div></div><div class="combined-pie-options">'+Object.keys(GROUPS).map(major=>`<label><input type="checkbox" data-subject="${esc(major)}">${esc(major)}</label>`).join('')+'</div><p id="combinedPieSelection" class="muted"></p>';
+  card.querySelector('.food-highlight').before(control);
+  control.querySelectorAll('input[data-subject]').forEach(input=>input.addEventListener('change',()=>{
+    if(input.checked)combinedPieMajors.add(input.dataset.subject);else combinedPieMajors.delete(input.dataset.subject);
+    foodDrillSub=null;syncCombinedPieChoices();renderDashboard();
+  }));
+  control.querySelectorAll('[data-subject-preset]').forEach(button=>button.addEventListener('click',()=>{
+    combinedPieMajors=new Set(button.dataset.subjectPreset==='food'?FOOD_MAJORS:Object.keys(GROUPS));
+    foodDrillSub=null;syncCombinedPieChoices();renderDashboard();
+  }));
+  card.querySelector('.food-help').textContent='選んだ大分類を1つの円グラフにまとめます。初期設定は食材・調味料・食品／飲料・外食の食費全体。分類を押すと商品の内訳を確認できます。';
+  card.querySelector('.chart-section-title h3').textContent='食費全体・選択科目の内訳';
+  card.querySelector('.food-highlight>span').lastChild.textContent='の選択科目合計';
+  syncCombinedPieChoices();
 }
 function pieSegmentAtClick(ev,slices){
   if(!slices.length)return null;
@@ -154,11 +181,9 @@ function pieSegmentAtClick(ev,slices){
   return slices.find(s=>fraction>=s.from/100-1e-8&&fraction<s.to/100+1e-8)||slices[slices.length-1];
 }
 function foodScopeRows(rows){
-  const scope=$('foodScope').value;
-  return rows.filter(r=>FOOD_MAJORS.includes(r.item.category)&&(scope==='all'||r.item.category===scope));
+  return rows.filter(r=>combinedPieMajors.has(r.item.category));
 }
 function renderFoodPie(rows,month,mode){
-  const scope=$('foodScope').value;
   const foodRows=foodScopeRows(rows);
   const total=foodRows.reduce((sum,r)=>sum+amountCents(r.amount),0);
   const root=$('foodPieContent');
@@ -170,7 +195,7 @@ function renderFoodPie(rows,month,mode){
     $('foodBack').textContent='← 小分類一覧に戻る';
     $('foodCurrent').textContent=foodDrillSub.replace(' / ',' ＞ ');
   }else{crumb.hidden=true;}
-  if(total<=0){foodDrillSub=null;crumb.hidden=true;$('foodItemBreakdown').hidden=true;$('foodItemBreakdown').innerHTML='';root.innerHTML='<div class="empty">対象月の食費はまだありません。食品を登録すると、ここに内訳が表示されます。</div>';return;}
+  if(total<=0){foodDrillSub=null;crumb.hidden=true;$('foodItemBreakdown').hidden=true;$('foodItemBreakdown').innerHTML='';root.innerHTML='<div class="empty">選択した科目に対象月の支出がありません。上の科目選択を変更してください。</div>';return;}
   const scopedRows=foodDrillSub?foodRows.filter(r=>(r.item.category||'その他')+' / '+(r.item.subcategory||'未分類')===foodDrillSub):foodRows;
   if(!scopedRows.length){foodDrillSub=null;return renderFoodPie(rows,month,mode);}
   const sums=new Map();
@@ -188,14 +213,14 @@ function renderFoodPie(rows,month,mode){
   });
   foodSlices=slices;
   const gradient=slices.map(s=>`${s.color} ${s.from.toFixed(8)}% ${s.to.toFixed(8)}%`).join(',');
-  const current=foodDrillSub?foodDrillSub.replace(' / ',' ＞ '):'食費の小分類';
+  const current=foodDrillSub?foodDrillSub.replace(' / ',' ＞ '):'選択した大分類の小分類';
   const label=`${month.replace('-','年')}月の${current}。${slices.map(s=>s.name+' '+s.percent.toFixed(1)+'%').join('、')}`;
   const legend=slices.map((s,i)=>{
     const content=`<span class="pie-swatch" style="background:${s.color}" aria-hidden="true"></span><span class="pie-name">${esc(s.name.replace(' / ',' ＞ '))}</span><span class="pie-amount">${yen(centsAmount(s.value))}</span><strong class="pie-percent">${s.percent.toFixed(1)}%</strong>`;
     return foodDrillSub?`<div class="pie-legend-row">${content}</div>`:
       `<button type="button" class="pie-legend-row food-pie-choice" data-food-index="${i}" aria-label="${esc(s.name.replace(' / ',' ＞ '))}の商品の内訳を見る">${content}<span class="food-next" aria-hidden="true">›</span></button>`;
   }).join('');
-  root.innerHTML=`<div class="pie-chart food-clickable-pie" style="background:conic-gradient(from -90deg,${gradient})" role="img" aria-label="${esc(label)}" title="凡例の分類名を押すと商品別の内訳を表示します"></div><div class="pie-legend"><p class="pie-sum">${foodDrillSub?'この小分類の合計':'食費の合計'} <strong>${yen(centsAmount(shownTotal))}</strong></p>${legend}</div>`;
+  root.innerHTML=`<div class="pie-chart food-clickable-pie" style="background:conic-gradient(from -90deg,${gradient})" role="img" aria-label="${esc(label)}" title="凡例の分類名を押すと商品別の内訳を表示します"></div><div class="pie-legend"><p class="pie-sum">${foodDrillSub?'この小分類の合計':'選択科目の合計'} <strong>${yen(centsAmount(shownTotal))}</strong></p>${legend}</div>`;
   root.querySelectorAll('[data-food-index]').forEach(b=>b.onclick=()=>{
     const idx=Number(b.dataset.foodIndex);
     if(!foodDrillSub&&slices[idx]){foodDrillSub=slices[idx].name;renderFoodPie(rows,month,mode)}
