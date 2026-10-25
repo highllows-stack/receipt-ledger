@@ -13,6 +13,22 @@ function guessCategory(raw){const s=String(raw||'');if(/(?:無洗米|精米|玄�
 function monthIsValid(month){return /^\d{4}-(0[1-9]|1[0-2])$/.test(String(month||''));}
 function amountCents(n){return Math.round(Number(n||0)*100);}
 function centsAmount(n){return Math.round(n)/100;}
+const MEAL_TYPES=[['breakfast','朝食用'],['lunch','昼食用'],['dinner','夕食用']];
+function mealAmounts(item){
+  const stored=item?.mealAllocations;
+  if(!stored||typeof stored!=='object'||Array.isArray(stored))return {breakfast:0,lunch:0,dinner:Number(item?.amount||0)};
+  return {breakfast:Number(stored.breakfast||0),lunch:Number(stored.lunch||0),dinner:Number(stored.dinner||0)};
+}
+function mealPortionCents(item,portionAmount){
+  const cents=amountCents(portionAmount),total=amountCents(item.amount),values=mealAmounts(item);
+  const weights=MEAL_TYPES.map(([key])=>amountCents(values[key]));
+  if(total<=0||weights.some(n=>n<0)||weights.reduce((a,b)=>a+b,0)!==total)return [0,0,cents];
+  const raw=weights.map(n=>n*cents/total),parts=raw.map(Math.floor);
+  const order=raw.map((n,i)=>({i,frac:n-parts[i]})).sort((a,b)=>b.frac-a.fr||a.i-b.i);
+  const remainder=cents-parts.reduce((a,b)=>a+b,0);
+  for(let j=0;j<remainder;j++)parts[order[j%order.length].i]++;
+  return parts;
+}
 function monthShift(month, offset){
   const m=monthIsValid(month)?month:today().slice(0,7);
   const d=new Date(Date.UTC(Number(m.slice(0,4)),Number(m.slice(5))-1+offset,1));
@@ -238,6 +254,15 @@ function renderDashboard(){
   $('monthlyTotal').textContent=yen(centsAmount(sumCents));
   $('monthlyItems').textContent=new Set(rows.map(r=>r.item.id)).size;
   $('monthlyReceipts').textContent=new Set(rows.map(r=>r.purchase.id)).size;
+  let mealPanel=$('mealSummary');
+  if(!mealPanel){mealPanel=document.createElement('article');mealPanel.id='mealSummary';mealPanel.className='meal-summary';
+    $('monthlyTotal').closest('article').parentElement.after(mealPanel);}
+  const mealTotals=[0,0,0];
+  rows.filter(r=>['食材','調味料','食品・飲料'].includes(r.item.category)).forEach(r=>{
+    mealPortionCents(r.item,r.amount).forEach((amount,i)=>mealTotals[i]+=amount);
+  });
+  mealPanel.innerHTML='<h3>食事区分別の食費</h3><p class="muted">食材・調味料・食品・飲料のみ。未設定の商品は夕食用に集計します。</p><div class="meal-summary-grid">'+
+    MEAL_TYPES.map(([,name],i)=>`<div><small>${name}</small><strong>${yen(centsAmount(mealTotals[i]))}</strong></div>`).join('')+'</div>';
   $('accountingExplanation').textContent=mode==='accounted'?
     '「計上月」で集計中。購入日が前月でも、その月分として配分した金額だけを含みます。':
     '「購入月」で集計中。支払った月に、各商品の購入金額をまとめて表示します。';

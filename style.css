@@ -223,3 +223,17 @@ button.chart-mode-button.selected{background:#1d6c54;color:#fff;box-shadow:0 1px
 .category-only-selects{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
 .category-only-selects select{width:100%}
 @media(max-width:520px){.category-only-selects{grid-template-columns:1fr}}
+.meal-allocation-panel{margin:12px 0;padding:12px;border:1px solid #b9d1c4;border-radius:10px;background:#f7fbf8}
+.meal-allocation-panel h4{margin:0 0 6px}
+.meal-allocation-inputs{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin:10px 0}
+.meal-allocation-inputs label{min-width:0;font-size:12px}
+.meal-allocation-inputs input{width:100%;min-width:0}
+.meal-validation{margin:8px 0 0;font-size:12px}
+.category-meal{margin-top:10px;padding-top:10px;border-top:1px solid #dce8e0}
+.category-meal>strong{font-size:13px}
+.category-meal-note{display:block;margin-top:7px;font-size:12px}
+.meal-summary{margin:14px 0}
+.meal-summary-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
+.meal-summary-grid>div{display:flex;flex-direction:column;gap:4px;padding:12px;background:#f4faf7;border-radius:10px}
+.meal-summary-grid strong{font-size:18px;overflow-wrap:anywhere}
+@media(max-width:520px){.meal-allocation-inputs{grid-template-columns:repeat(3,minmax(0,1fr));gap:5px}.meal-summary-grid{gap:5px}.meal-summary-grid>div{padding:8px}.meal-summary-grid strong{font-size:14px}}

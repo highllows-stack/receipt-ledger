@@ -260,6 +260,40 @@ function editSplitAllocationPlans(plans,targetCents){
     plans.map((a,i)=>({...a,amount:centsAmount(base[i]-left[i]),quantity:a.quantity==null?null:a.quantity/2}))];
 }
 
+function editMealRead(row,strict=true){
+  const amounts={};let total=0;
+  for(const [key] of MEAL_TYPES){
+    const input=row.querySelector('.meal-'+key);
+    const value=input.value.trim()===''?NaN:Number(input.value);
+    if(!Number.isFinite(value)||value<0||Math.round(value*100)!==value*100&&Math.abs(Math.round(value*100)-value*100)>0.000001){
+      if(strict)throw Error('食事区分の金額は0円以上・小数2桁以内で入力してください。');return null;
+    }
+    amounts[key]=value;total+=amountCents(value);
+  }
+  const price=amountCents(row.querySelector('.e-amount').value);
+  const message=row.querySelector('.meal-validation');
+  if(message)message.textContent=total===price?'食事区分の合計が商品金額と一致しています。':`配分 ${yen(centsAmount(total))} ／ 商品金額 ${yen(centsAmount(price))}（差額 ${yen(centsAmount(price-total))}）`;
+  if(total!==price){if(strict)throw Error('食事区分の配分合計を商品金額に一致させてください。');return null;}
+  return amounts;
+}
+function editMealPanel(row,item){
+  const values=mealAmounts(item);
+  const panel=document.createElement('section');panel.className='meal-allocation-panel';
+  panel.innerHTML='<h4>食事区分への金額配分</h4><p class="muted">未設定なら全額を夕食用に計上します。</p><div class="meal-allocation-inputs">'+
+    MEAL_TYPES.map(([key,name])=>`<label>${name}（円）<input type="number" min="0" step="0.01" class="meal-${key}" value="${Number(values[key]||0)}"></label>`).join('')+
+    '</div><button type="button" class="secondary meal-rest-dinner">残額を夕食用に入れる</button><p class="meal-validation muted"></p>';
+  row.querySelector('.account-panel').after(panel);
+  panel.querySelectorAll('input').forEach(el=>el.addEventListener('input',()=>editMealRead(row,false)));
+  panel.querySelector('.meal-rest-dinner').addEventListener('click',()=>{
+    const amount=amountCents(row.querySelector('.e-amount').value);
+    const morning=amountCents(row.querySelector('.meal-breakfast').value);
+    const lunch=amountCents(row.querySelector('.meal-lunch').value);
+    row.querySelector('.meal-dinner').value=String(centsAmount(Math.max(0,amount-morning-lunch)));
+    editMealRead(row,false);
+  });
+  row.querySelector('.e-amount').addEventListener('input',()=>editMealRead(row,false));
+  editMealRead(row,false);
+}
 function editNewRow(item={}){
   const wrap=document.createElement('section');
   wrap.className='purchase-edit-row';
@@ -353,6 +387,7 @@ function editNewRow(item={}){
   const initialized=Array.isArray(item.allocations)&&item.allocations.length?item.allocations:[{month:defaultMonth,amount:Number(item.amount||0),quantity:null}];
   const planList=wrap.querySelector('.account-list');
   initialized.forEach(a=>planList.append(editAllocationElement(a,editInitialFraction(a,initialized,item.amount),item.unit||'個')));
+  editMealPanel(wrap,item);
   wrap.querySelector('.a-method').value=editModeForPlans(initialized);
   editApplyMode(wrap);
   wrap.dataset.autoSingleAmount=initialized.length===1?'yes':'no';
@@ -413,10 +448,15 @@ function editNewRow(item={}){
     const qty=draft.qty/2;
     if(qty<0.001)return editStatus('購入数量が小さすぎて明細を分割できません。');
     const [left,right]=editSplitAllocationPlans(draft.allocations,halfCents);
-    const copy={...draft,id:uid(),amount:centsAmount(amountCents(draft.amount)-halfCents),qty,allocations:right};
+    const mealLeft=mealPortionCents(draft,centsAmount(halfCents));
+    const mealRight=MEAL_TYPES.map(([key],i)=>amountCents(draft.mealAllocations[key])-mealLeft[i]);
+    const asMeals=parts=>Object.fromEntries(MEAL_TYPES.map(([key],i)=>[key,centsAmount(parts[i])]));
+    const copy={...draft,id:uid(),amount:centsAmount(amountCents(draft.amount)-halfCents),qty,allocations:right,mealAllocations:asMeals(mealRight)};
     wrap.querySelector('.e-amount').value=String(centsAmount(halfCents));
     wrap.querySelector('.e-qty').value=String(qty);
     editSetAllocations(wrap,left);
+    MEAL_TYPES.forEach(([key],i)=>{wrap.querySelector('.meal-'+key).value=String(centsAmount(mealLeft[i]));});
+    editMealRead(wrap,false);
     const newRow=editNewRow(copy);
     wrap.after(newRow);editTotals();
     newRow.querySelector('.e-name').focus();
@@ -439,7 +479,8 @@ function editCategoryRender(){
     const major=source.querySelector('.e-category').value;
     const minor=source.querySelector('.e-subcategory').value;
     const card=document.createElement('section');card.className='category-only-item';
-    card.innerHTML=`<div class="category-only-product"><strong>${index+1}. ${esc(name)}</strong><span>${yen(amount)}</span></div><div class="category-only-selects"><label>大分類<select class="category-only-major">${editOptions(Object.keys(GROUPS),major)}</select></label><label>小分類<select class="category-only-minor">${editOptions(GROUPS[major]||GROUPS['その他'],minor)}</select></label></div>`;
+    card.innerHTML=`<div class="category-only-product"><strong>${index+1}. ${esc(name)}</strong><span>${yen(amount)}</span></div><div class="category-only-selects"><label>大分類<select class="category-only-major">${editOptions(Object.keys(GROUPS),major)}</select></label><label>小分類<select class="category-only-minor">${editOptions(GROUPS[major]||GROUPS['その他'],minor)}</select></label></div>
+      <div class="category-meal"><strong>食事区分（円）</strong><div class="meal-allocation-inputs">${MEAL_TYPES.map(([key,label])=>`<label>${label}<input type="number" min="0" step="0.01" class="category-meal-${key}" value="${source.querySelector('.meal-'+key).value}"></label>`).join('')}</div><button type="button" class="secondary category-meal-rest">残額を夕食へ</button><span class="category-meal-note muted"></span></div>`;
     const majorSelect=card.querySelector('.category-only-major');
     const minorSelect=card.querySelector('.category-only-minor');
     majorSelect.addEventListener('change',()=>{
@@ -452,6 +493,19 @@ function editCategoryRender(){
       source.querySelector('.e-subcategory').value=minorSelect.value;
       source.querySelector('.e-subcategory').dispatchEvent(new Event('change',{bubbles:true}));
     });
+    const syncMeal=()=>{
+      for(const [key] of MEAL_TYPES)source.querySelector('.meal-'+key).value=card.querySelector('.category-meal-'+key).value;
+      const valid=editMealRead(source,false);
+      card.querySelector('.category-meal-note').textContent=valid?'配分合計が一致しています。':'食事区分の金額合計を商品金額に合わせてください。';
+    };
+    card.querySelectorAll('.category-meal input').forEach(input=>input.addEventListener('input',syncMeal));
+    card.querySelector('.category-meal-rest').addEventListener('click',()=>{
+      const morning=amountCents(card.querySelector('.category-meal-breakfast').value);
+      const lunch=amountCents(card.querySelector('.category-meal-lunch').value);
+      card.querySelector('.category-meal-dinner').value=String(centsAmount(Math.max(0,amountCents(amount)-morning-lunch)));
+      syncMeal();
+    });
+    syncMeal();
     panel.append(card);
   });
 }
@@ -463,7 +517,7 @@ function editSetCategoryOnly(enabled){
   editGet('editCategoryOnlyButton').setAttribute('aria-pressed',String(editCategoryOnly));
   editGet('editDetailButton').setAttribute('aria-pressed',String(!editCategoryOnly));
   if(editCategoryOnly)editCategoryRender();
-  editStatus(editCategoryOnly?'カテゴリーだけを変更できます。商品金額・数量・月別配分は編集せず、最後に「変更を保存」を押してください。':'詳細編集に切り替えました。');
+  editStatus(editCategoryOnly?'カテゴリーと食事区分を変更できます。商品金額・数量・月別配分は編集せず、最後に「変更を保存」を押してください。':'詳細編集に切り替えました。');
 }
 window.editCategoryRefresh=()=>{if(editCategoryOnly)editCategoryRender();};
 function editTotals(){
@@ -496,8 +550,10 @@ function editRowData(row,strict=true){
   if(amount>999999999||qty>999999999)return strict?(()=>{throw Error('数値が大きすぎます')})():null;
   let allocations;
   try{allocations=editAllocationPlan(row,name,amount);}catch(e){if(strict)throw e;return null;}
+  const mealAllocations=editMealRead(row,strict);
+  if(!mealAllocations)return null;
   return{id:row.dataset.id,name,canonical,amount,qty,size,unit:v('e-unit'),
-    category:v('e-category'),subcategory:v('e-subcategory'),origin:v('e-origin').trim(),state:v('e-state'),allocations};
+    category:v('e-category'),subcategory:v('e-subcategory'),origin:v('e-origin').trim(),state:v('e-state'),allocations,mealAllocations};
 }
 window.openPurchaseEditor=function(pid,focusId){
   if(editGet('editCalculator'))editCalculatorClose();
@@ -617,7 +673,7 @@ function editInit(){
   editCalculatorInit();
   const form=editGet('editItems').closest('.receipt-editor-form');
   const switcher=document.createElement('div');switcher.className='category-editor-switch';
-  switcher.innerHTML='<strong>編集方法</strong><div><button type="button" id="editDetailButton" class="secondary" aria-pressed="true">詳細編集</button><button type="button" id="editCategoryOnlyButton" class="secondary" aria-pressed="false">カテゴリーだけ編集</button></div>';
+  switcher.innerHTML='<strong>編集方法</strong><div><button type="button" id="editDetailButton" class="secondary" aria-pressed="true">詳細編集</button><button type="button" id="editCategoryOnlyButton" class="secondary" aria-pressed="false">カテゴリー・食事区分だけ編集</button></div>';
   editGet('editItems').before(switcher);
   const categoryPanel=document.createElement('section');categoryPanel.id='editCategoryOnlyList';categoryPanel.className='category-only-list';categoryPanel.hidden=true;
   editGet('editItems').before(categoryPanel);
