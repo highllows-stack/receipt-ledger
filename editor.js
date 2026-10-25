@@ -426,6 +426,46 @@ function editNewRow(item={}){
   return wrap;
 }
 function editStatus(msg){editGet('editStatus').textContent=msg;}
+let editCategoryOnly=false;
+function editCategoryRender(){
+  const panel=editGet('editCategoryOnlyList');
+  if(!panel||!editCategoryOnly)return;
+  const rows=[...editGet('editItems').querySelectorAll('.purchase-edit-row')];
+  const sum=rows.reduce((n,row)=>n+(Number(row.querySelector('.e-amount').value)||0),0);
+  panel.innerHTML=`<p class="muted">${rows.length}商品・税込合計 ${yen(sum)}（金額は変更できません）</p>`;
+  rows.forEach((source,index)=>{
+    const name=source.querySelector('.e-name').value;
+    const amount=Number(source.querySelector('.e-amount').value)||0;
+    const major=source.querySelector('.e-category').value;
+    const minor=source.querySelector('.e-subcategory').value;
+    const card=document.createElement('section');card.className='category-only-item';
+    card.innerHTML=`<div class="category-only-product"><strong>${index+1}. ${esc(name)}</strong><span>${yen(amount)}</span></div><div class="category-only-selects"><label>大分類<select class="category-only-major">${editOptions(Object.keys(GROUPS),major)}</select></label><label>小分類<select class="category-only-minor">${editOptions(GROUPS[major]||GROUPS['その他'],minor)}</select></label></div>`;
+    const majorSelect=card.querySelector('.category-only-major');
+    const minorSelect=card.querySelector('.category-only-minor');
+    majorSelect.addEventListener('change',()=>{
+      const target=source.querySelector('.e-category');target.value=majorSelect.value;
+      target.dispatchEvent(new Event('change',{bubbles:true}));
+      const sub=source.querySelector('.e-subcategory');
+      minorSelect.innerHTML=editOptions(GROUPS[majorSelect.value],sub.value);
+    });
+    minorSelect.addEventListener('change',()=>{
+      source.querySelector('.e-subcategory').value=minorSelect.value;
+      source.querySelector('.e-subcategory').dispatchEvent(new Event('change',{bubbles:true}));
+    });
+    panel.append(card);
+  });
+}
+function editSetCategoryOnly(enabled){
+  editCategoryOnly=!!enabled;
+  const form=editGet('editItems').closest('.receipt-editor-form');
+  form.classList.toggle('category-only-mode',editCategoryOnly);
+  editGet('editCategoryOnlyList').hidden=!editCategoryOnly;
+  editGet('editCategoryOnlyButton').setAttribute('aria-pressed',String(editCategoryOnly));
+  editGet('editDetailButton').setAttribute('aria-pressed',String(!editCategoryOnly));
+  if(editCategoryOnly)editCategoryRender();
+  editStatus(editCategoryOnly?'カテゴリーだけを変更できます。商品金額・数量・月別配分は編集せず、最後に「変更を保存」を押してください。':'詳細編集に切り替えました。');
+}
+window.editCategoryRefresh=()=>{if(editCategoryOnly)editCategoryRender();};
 function editTotals(){
   const rows=[...editGet('editItems').querySelectorAll('.purchase-edit-row')];
   const sum=rows.reduce((v,row)=>v+(Number(row.querySelector('.e-amount')?.value)||0),0);
@@ -472,6 +512,7 @@ window.openPurchaseEditor=function(pid,focusId){
   editGet('editLearnChanges').checked=true;
   editGet('editItems').innerHTML='';
   for(const i of p.items){editGet('editItems').append(editNewRow(i));}
+  editSetCategoryOnly(false);
   editStatus('商品を編集・追加・分割できます。変更は「変更を保存」を押すまで反映されません。');
   editTotals();
   const dlg=editGet('purchaseEditor');
@@ -574,6 +615,14 @@ function editCalculatorInit(){
 }
 function editInit(){
   editCalculatorInit();
+  const form=editGet('editItems').closest('.receipt-editor-form');
+  const switcher=document.createElement('div');switcher.className='category-editor-switch';
+  switcher.innerHTML='<strong>編集方法</strong><div><button type="button" id="editDetailButton" class="secondary" aria-pressed="true">詳細編集</button><button type="button" id="editCategoryOnlyButton" class="secondary" aria-pressed="false">カテゴリーだけ編集</button></div>';
+  editGet('editItems').before(switcher);
+  const categoryPanel=document.createElement('section');categoryPanel.id='editCategoryOnlyList';categoryPanel.className='category-only-list';categoryPanel.hidden=true;
+  editGet('editItems').before(categoryPanel);
+  editGet('editDetailButton').addEventListener('click',()=>editSetCategoryOnly(false));
+  editGet('editCategoryOnlyButton').addEventListener('click',()=>editSetCategoryOnly(true));
   editGet('editClose').addEventListener('click',editClose);
   editGet('editCancel').addEventListener('click',editClose);
   editGet('editAdd').addEventListener('click',()=>{if(editGet('editItems').children.length>=100)return editStatus('明細は最大100件です。');editGet('editItems').append(editNewRow({name:'',amount:0,qty:1,unit:'個',category:'その他',subcategory:'未分類'}));editTotals();editGet('editItems').lastElementChild.querySelector('.e-name').focus();});

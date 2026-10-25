@@ -604,6 +604,7 @@ function receiptInit(){
     if(!confirm(text))return;
     const rows=editGet('editItems');rows.innerHTML='';
     prepared.forEach(({item})=>rows.append(editNewRow(item)));
+    window.editCategoryRefresh?.();
     if(parsed.total!=null)editGet('editReceiptTotal').value=parsed.total;
     if(selectedPreview?.correctedText!==undefined){
       currentEditPurchase.receiptOcrText=ocrEvidenceStore(selectedPreview.correctedText);
