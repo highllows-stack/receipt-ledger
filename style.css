@@ -254,6 +254,9 @@ button.chart-mode-button.selected{background:#1d6c54;color:#fff;box-shadow:0 1px
 .meal-pie-detail-head{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:8px}
 .meal-pie-detail-head h4{margin:0}
 .meal-pie-details .allocated-line{background:#fff}
+.graph-line-actions{display:flex;align-items:center;justify-content:flex-end;gap:9px;flex-wrap:wrap;text-align:right}
+.graph-edit-item{padding:6px 11px;font-size:12px;white-space:nowrap}
+.trend-open-month{font-size:11px;padding:4px 8px;margin-top:7px}
 .pie-legend-link[aria-pressed="true"]{background:#dff2e8;border-color:#a6ceba}
 .meal-summary-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}
 .meal-summary-grid>div{display:flex;flex-direction:column;gap:4px;padding:12px;background:#f4faf7;border-radius:10px}

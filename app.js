@@ -150,6 +150,15 @@ function showFoodMajor(major){
   $('foodBreakdownCard').scrollIntoView({behavior:'smooth',block:'start'});
   $('foodBreakdownCard').focus({preventScroll:true});
 }
+function showCategoryDetail(major,minor){
+  const details=[...$('categoryDetails').querySelectorAll('details.category-detail')]
+    .find(el=>el.dataset.graphMajor===major);
+  if(!details)return;
+  details.open=true;
+  let target=details;
+  if(minor){const sub=[...details.querySelectorAll('details.subcategory-detail')].find(el=>el.dataset.graphMinor===minor);if(sub){sub.open=true;target=sub;}}
+  target.scrollIntoView({behavior:'smooth',block:'center'});
+}
 function syncCombinedPieChoices(){
   const root=$('combinedPieSubjects');if(!root)return;
   root.querySelectorAll('input[data-subject]').forEach(input=>{input.checked=combinedPieMajors.has(input.dataset.subject)});
@@ -236,10 +245,13 @@ function renderFoodPie(rows,month,mode){
   const list=$('foodItemBreakdown');
   if(foodDrillSub){
     const lines=scopedRows.slice().sort((a,b)=>b.amount-a.amount).map(r=>
-      `<div class="allocated-line"><div><strong>${esc(r.item.name)}</strong><small>${esc(r.purchase.merchant)} · 購入日 ${esc(r.purchase.date)}${r.quantity!=null?' · 配分数量 '+esc(r.quantity)+' '+esc(r.item.unit||'個'):''}</small></div><strong>${yen(r.amount)}</strong></div>`).join('');
+      `<div class="allocated-line"><div><strong>${esc(r.item.name)}</strong><small>${esc(r.purchase.merchant)} · 購入日 ${esc(r.purchase.date)}${r.quantity!=null?' · 配分数量 '+esc(r.quantity)+' '+esc(r.item.unit||'個'):''}</small></div><span class="graph-line-actions"><strong>${yen(r.amount)}</strong>${graphEditButton(r)}</span></div>`).join('');
     list.hidden=false;
     list.innerHTML=`<h4>該当する購入明細</h4>${lines}`;
   }else{list.hidden=true;list.innerHTML='';}
+}
+function graphEditButton(row){
+  return `<button type="button" class="secondary graph-edit-item" data-graph-edit="${esc(row.purchase.id)}" data-graph-item="${esc(row.item.id)}" aria-label="${esc(row.item.name)}の明細を編集">編集</button>`;
 }
 function pieDataForRows(rows,level){
   const sums=new Map();
@@ -273,17 +285,18 @@ function renderCategoryPie(rows,month,mode){
     const body=`<span class="pie-swatch" style="background:${s.color}" aria-hidden="true"></span><span class="pie-name">${esc(s.label)}</span><span class="pie-amount">${yen(centsAmount(s.value))}</span><strong class="pie-percent">${s.percent.toFixed(1)}%</strong>`;
     const major=level==='minor'?s.label.split(' / ')[0]:s.label;
     if(mealChart)return `<button type="button" class="pie-legend-row pie-legend-link" data-meal-detail="${esc(s.label)}" aria-pressed="${selectedMealDetail===s.label}" title="${esc(s.label)}の商品内訳を表示">${body}<span class="food-next" aria-hidden="true">›</span></button>`;
-    return FOOD_MAJORS.includes(major)?`<button type="button" class="pie-legend-row pie-legend-link" data-food-major="${esc(major)}" title="食費の内訳を表示">${body}<span class="food-next" aria-hidden="true">›</span></button>`:`<div class="pie-legend-row">${body}</div>`;
+    return FOOD_MAJORS.includes(major)?`<button type="button" class="pie-legend-row pie-legend-link" data-food-major="${esc(major)}" title="食費の内訳を表示">${body}<span class="food-next" aria-hidden="true">›</span></button>`:`<button type="button" class="pie-legend-row pie-legend-link" data-graph-major="${esc(major)}" data-graph-minor="${esc(level==='minor'?s.label.split(' / ').slice(1).join(' / '):'')}" title="購入明細を開く">${body}<span class="food-next" aria-hidden="true">›</span></button>`;
   }).join('');
   const mealDetail=mealChart&&selectedMealDetail?(()=>{
     const mealIndex=MEAL_TYPES.findIndex(([,name])=>name===selectedMealDetail);
     if(mealIndex<0)return '';
     const itemRows=rows.filter(r=>mealRelevant(r.item)).map(r=>({...r,mealAmount:mealPortionCents(r.item,r.amount)[mealIndex]})).filter(r=>r.mealAmount>0).sort((a,b)=>b.mealAmount-a.mealAmount);
     const detailTotal=itemRows.reduce((sum,r)=>sum+r.mealAmount,0);
-    return `<section class="meal-pie-details"><div class="meal-pie-detail-head"><h4>${esc(selectedMealDetail)}の商品内訳（${itemRows.length}明細・${yen(centsAmount(detailTotal))}）</h4><button type="button" class="secondary" id="closeMealDetail">内訳を閉じる</button></div>${itemRows.map(r=>`<div class="allocated-line"><div><strong>${esc(r.item.name)}</strong><small>${esc(r.purchase.merchant||'購入先不明')} · ${esc(r.purchase.date||'')} · ${esc(r.item.category||'その他')} ＞ ${esc(r.item.subcategory||'未分類')}</small></div><strong>${yen(centsAmount(r.mealAmount))}</strong></div>`).join('')||'<div class="empty">この区分の商品はありません。</div>'}</section>`;
+    return `<section class="meal-pie-details"><div class="meal-pie-detail-head"><h4>${esc(selectedMealDetail)}の商品内訳（${itemRows.length}明細・${yen(centsAmount(detailTotal))}）</h4><button type="button" class="secondary" id="closeMealDetail">内訳を閉じる</button></div>${itemRows.map(r=>`<div class="allocated-line"><div><strong>${esc(r.item.name)}</strong><small>${esc(r.purchase.merchant||'購入先不明')} · ${esc(r.purchase.date||'')} · ${esc(r.item.category||'その他')} ＞ ${esc(r.item.subcategory||'未分類')}</small></div><span class="graph-line-actions"><strong>${yen(centsAmount(r.mealAmount))}</strong>${graphEditButton(r)}</span></div>`).join('')||'<div class="empty">この区分の商品はありません。</div>'}</section>`;
   })():'';
   $('categoryPieContent').innerHTML=`<div class="pie-chart" style="background:conic-gradient(from -90deg,${gradient})" role="img" aria-label="${esc(label)}"></div><div class="pie-legend"><p class="pie-sum">${mealChart?'食費合計':'支出合計'} <strong>${yen(centsAmount(total))}</strong></p>${legend}</div>${mealDetail}`;
   $('categoryPieContent').querySelectorAll('[data-food-major]').forEach(b=>b.onclick=()=>showFoodMajor(b.dataset.foodMajor));
+  $('categoryPieContent').querySelectorAll('button[data-graph-major]').forEach(b=>b.onclick=()=>showCategoryDetail(b.dataset.graphMajor,b.dataset.graphMinor));
   if(mealChart){
     const choose=mealName=>{selectedMealDetail=selectedMealDetail===mealName?null:mealName;renderCategoryPie(rows,month,mode)};
     $('categoryPieContent').querySelectorAll('[data-meal-detail]').forEach(b=>b.onclick=()=>choose(b.dataset.mealDetail));
@@ -297,7 +310,7 @@ function renderCategoryPie(rows,month,mode){
     const segments=$('categoryPieContent').querySelector('.pie-chart');
     segments.classList.add('interactive-pie');
     segments.title='食材・調味料・食品・飲料の扇形を押すと、食費の内訳へ移動します';
-    segments.addEventListener('click',e=>{const picked=pieSegmentAtClick(e,slices.map(s=>({...s,name:s.label})));if(picked)showFoodMajor(picked.label)});
+    segments.addEventListener('click',e=>{const picked=pieSegmentAtClick(e,slices.map(s=>({...s,name:s.label})));if(picked){if(FOOD_MAJORS.includes(picked.label))showFoodMajor(picked.label);else showCategoryDetail(picked.label);}});
   }
 }
 function renderDashboard(){
@@ -320,8 +333,9 @@ function renderDashboard(){
     '「購入月」で集計中。支払った月に、各商品の購入金額をまとめて表示します。';
   const sums={};for(const r of rows)sums[r.item.category]=(sums[r.item.category]||0)+amountCents(r.amount);
   const max=Math.max(1,...Object.values(sums));
-  $('categoryBars').innerHTML=Object.entries(sums).sort((a,b)=>b[1]-a[1]).map(([k,v])=>`<div class="bar"><div class="bar-head">${FOOD_MAJORS.includes(k)?`<button type="button" class="bar-food-link" data-food-major="${esc(k)}" title="食費の内訳を見る">${esc(k)} <span aria-hidden="true">›</span></button>`:`<span>${esc(k)}</span>`}<strong>${yen(centsAmount(v))}</strong></div><div class="track"><div class="fill" style="width:${v/max*100}%"></div></div></div>`).join('')||'<div class="empty">この月の計上履歴はありません。</div>';
+  $('categoryBars').innerHTML=Object.entries(sums).sort((a,b)=>b[1]-a[1]).map(([k,v])=>`<div class="bar"><div class="bar-head">${FOOD_MAJORS.includes(k)?`<button type="button" class="bar-food-link" data-food-major="${esc(k)}" title="食費の内訳を見る">${esc(k)} <span aria-hidden="true">›</span></button>`:`<button type="button" class="bar-food-link" data-graph-major="${esc(k)}" title="商品明細を開く">${esc(k)} <span aria-hidden="true">›</span></button>`}<strong>${yen(centsAmount(v))}</strong></div><div class="track"><div class="fill" style="width:${v/max*100}%"></div></div></div>`).join('')||'<div class="empty">この月の計上履歴はありません。</div>';
   $('categoryBars').querySelectorAll('[data-food-major]').forEach(b=>b.onclick=()=>showFoodMajor(b.dataset.foodMajor));
+  $('categoryBars').querySelectorAll('[data-graph-major]').forEach(b=>b.onclick=()=>showCategoryDetail(b.dataset.graphMajor));
   renderCategoryPie(rows,month,mode);
   renderFoodPie(rows,month,mode);
   const cats=new Map();
@@ -334,15 +348,15 @@ function renderDashboard(){
   const catRows=[...cats.entries()].map(([cat,subs])=>{
     const all=[...subs.values()].flat();return {cat,subs,total:subtotal(all)};
   }).sort((a,b)=>b.total-a.total);
-  $('categoryDetails').innerHTML=catRows.map(({cat,subs,total})=>`<details class="category-detail"><summary><strong>${esc(cat)}</strong><strong>${yen(total)}</strong></summary>
+  $('categoryDetails').innerHTML=catRows.map(({cat,subs,total})=>`<details class="category-detail" data-graph-major="${esc(cat)}"><summary><strong>${esc(cat)}</strong><strong>${yen(total)}</strong></summary>
     <div class="sub-list">${[...subs.entries()].map(([sub,list])=>({sub,list,total:subtotal(list)})).sort((a,b)=>b.total-a.total).map(({sub,list,total})=>
-      `<details class="subcategory-detail"><summary><span>${esc(sub)} <small>${list.length}明細</small></span><strong>${yen(total)}</strong></summary><div class="allocated-items">${list.sort((a,b)=>b.amount-a.amount).map(r=>
-      `<div class="allocated-line"><div><strong>${esc(r.item.name)}</strong><small>${esc(r.purchase.merchant)} · 購入日 ${esc(r.purchase.date)}${r.quantity!=null?' · 配分数量 '+esc(r.quantity)+' '+esc(r.item.unit||'個'):''}</small></div><strong>${yen(r.amount)}</strong></div>`
+      `<details class="subcategory-detail" data-graph-minor="${esc(sub)}"><summary><span>${esc(sub)} <small>${list.length}明細</small></span><strong>${yen(total)}</strong></summary><div class="allocated-items">${list.sort((a,b)=>b.amount-a.amount).map(r=>
+      `<div class="allocated-line"><div><strong>${esc(r.item.name)}</strong><small>${esc(r.purchase.merchant)} · 購入日 ${esc(r.purchase.date)}${r.quantity!=null?' · 配分数量 '+esc(r.quantity)+' '+esc(r.item.unit||'個'):''}</small></div><span class="graph-line-actions"><strong>${yen(r.amount)}</strong>${graphEditButton(r)}</span></div>`
       ).join('')}</div></details>`).join('')}</div></details>`).join('')||'<div class="empty">内訳がありません。</div>';
   const months=Array.from({length:6},(_,i)=>monthShift(month,i-5));
   const series=months.map(m=>({month:m,total:monthRows(m,mode).reduce((s,r)=>s+amountCents(r.amount),0)}));
   const maxTrend=Math.max(1,...series.map(s=>s.total));
-  $('monthTrend').innerHTML=series.map(s=>`<div class="trend-cell${s.month===month?' current':''}"><div class="trend-value">${yen(centsAmount(s.total))}</div><div class="trend-track"><div class="trend-fill" style="height:${s.total?Math.max(2,s.total/maxTrend*100):0}%"></div></div><small>${esc(s.month.replace('-','/'))}</small></div>`).join('');
+  $('monthTrend').innerHTML=series.map(s=>`<div class="trend-cell${s.month===month?' current':''}"><div class="trend-value">${yen(centsAmount(s.total))}</div><div class="trend-track"><div class="trend-fill" style="height:${s.total?Math.max(2,s.total/maxTrend*100):0}%"></div></div><small>${esc(s.month.replace('-','/'))}</small><button type="button" class="secondary trend-open-month" data-trend-month="${esc(s.month)}">明細</button></div>`).join('');
 }
 function renderHistory(){const q=$('historySearch').value.toLowerCase(),mode=$('historyMode').value;const ps=active().filter(p=>(p.merchant+' '+p.items.map(i=>i.name+' '+i.canonical).join(' ')).toLowerCase().includes(q));const root=$('historyList');if(mode==='receipt'){root.innerHTML=ps.map(p=>`<div class="history-card"><details><summary class="receipt-head"><span><strong>${esc(p.merchant)}</strong><br><small>${esc(p.date)} · ${p.items.length}商品${p.reviewStatus==='needs_review'?' · 要確認':''}</small></span><strong>${yen(p.items.reduce((s,i)=>s+i.amount,0))}</strong></summary><div><button data-edit-purchase="${esc(p.id)}" class="secondary">購入全体を編集・明細を分割</button>${p.items.map(i=>`<div class="line"><span>${esc(i.name)} <small>（${esc(i.category)} ＞ ${esc(i.subcategory)}）</small><br><small class="allocation-history">計上：${allocationShortLabel(p,i)}</small></span><span>${yen(i.amount)} <button data-edit="${esc(p.id)}" data-item="${esc(i.id)}" class="secondary">編集</button></span></div>`).join('')}</div><button data-delete="${esc(p.id)}" class="secondary">この購入を削除</button></details></div>`).join('')}else{root.innerHTML=ps.flatMap(p=>p.items.map(i=>`<div class="history-card"><div class="line"><span><strong>${esc(i.canonical)}</strong><br><small>${esc(p.date)} · ${esc(p.merchant)} · ${esc(i.category)} ＞ ${esc(i.subcategory)}</small><br><small class="allocation-history">計上：${allocationShortLabel(p,i)}</small></span><span>${yen(i.amount)} <button data-edit="${esc(p.id)}" data-item="${esc(i.id)}" class="secondary">編集</button></span></div></div>`)).join('')}if(!root.innerHTML)root.innerHTML='<div class="empty">購入履歴がありません。</div>';root.querySelectorAll('[data-delete]').forEach(b=>b.onclick=()=>{if(!confirm('この購入を削除しますか？ 削除前にバックアップをおすすめします。'))return;if(window.cloudMode){window.cloudDeletePurchase(b.dataset.delete);return;}state.purchases=state.purchases.filter(p=>p.id!==b.dataset.delete);persist();refresh()});root.querySelectorAll('[data-edit]').forEach(b=>b.onclick=()=>editItem(b.dataset.edit,b.dataset.item));root.querySelectorAll('[data-edit-purchase]').forEach(b=>b.onclick=()=>window.openPurchaseEditor(b.dataset.editPurchase))}
 function editItem(pid,iid){if(typeof window.openPurchaseEditor==='function')window.openPurchaseEditor(pid,iid);else toast('編集機能の読み込みに失敗しました。再読み込みしてください。')}
@@ -363,4 +377,11 @@ try{
 }catch{}
 $('month').addEventListener('change',()=>{
   try{if(monthIsValid($('month').value))localStorage.setItem(DASHBOARD_MONTH_KEY,$('month').value);}catch{}
+});
+// Delegation survives dashboard re-rendering, so every graph's item edit button remains active.
+$('dashboard').addEventListener('click',event=>{
+  const button=event.target.closest?.('button[data-graph-edit]');
+  if(button){event.preventDefault();editItem(button.dataset.graphEdit,button.dataset.graphItem);return;}
+  const monthButton=event.target.closest?.('button[data-trend-month]');
+  if(monthButton){$('month').value=monthButton.dataset.trendMonth;$('month').dispatchEvent(new Event('change',{bubbles:true}));$('categoryDetails').scrollIntoView({behavior:'smooth',block:'start'});}
 });
