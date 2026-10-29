@@ -13,16 +13,17 @@ function guessCategory(raw){const s=String(raw||'');if(/(?:無洗米|精米|玄�
 function monthIsValid(month){return /^\d{4}-(0[1-9]|1[0-2])$/.test(String(month||''));}
 function amountCents(n){return Math.round(Number(n||0)*100);}
 function centsAmount(n){return Math.round(n)/100;}
-const MEAL_TYPES=[['breakfast','朝食用'],['lunch','昼食用'],['dinner','夕食用']];
+const MEAL_TYPES=[['breakfast','朝食用'],['lunch','昼食用'],['dinner','夕食用'],['work','職場用']];
+function mealRelevant(item){return ['食材','調味料','食品・飲料','外食'].includes(item.category)||(item.category==='職場用'&&item.subcategory==='飲食');}
 function mealAmounts(item){
   const stored=item?.mealAllocations;
-  if(!stored||typeof stored!=='object'||Array.isArray(stored))return {breakfast:0,lunch:0,dinner:Number(item?.amount||0)};
-  return {breakfast:Number(stored.breakfast||0),lunch:Number(stored.lunch||0),dinner:Number(stored.dinner||0)};
+  if(!stored||typeof stored!=='object'||Array.isArray(stored))return {breakfast:0,lunch:0,dinner:Number(item?.amount||0),work:0};
+  return {breakfast:Number(stored.breakfast||0),lunch:Number(stored.lunch||0),dinner:Number(stored.dinner||0),work:Number(stored.work||0)};
 }
 function mealPortionCents(item,portionAmount){
   const cents=amountCents(portionAmount),total=amountCents(item.amount),values=mealAmounts(item);
   const weights=MEAL_TYPES.map(([key])=>amountCents(values[key]));
-  if(total<=0||weights.some(n=>n<0)||weights.reduce((a,b)=>a+b,0)!==total)return [0,0,cents];
+  if(total<=0||weights.some(n=>!Number.isFinite(n)||n<0)||weights.reduce((a,b)=>a+b,0)!==total)return [0,0,cents,0];
   const raw=weights.map(n=>n*cents/total),parts=raw.map(Math.floor);
   const order=raw.map((n,i)=>({i,frac:n-parts[i]})).sort((a,b)=>b.frac-a.fr||a.i-b.i);
   const remainder=cents-parts.reduce((a,b)=>a+b,0);
@@ -115,7 +116,9 @@ const DASHBOARD_PIE_COLORS=['#23836c','#db8e40','#6188bd','#b96f92','#8375b5','#
 function categoryColor(index){return DASHBOARD_PIE_COLORS[index%DASHBOARD_PIE_COLORS.length]}
 function chartPrefsRead(){
   initCombinedPieChoices();
-  if(!$('pieCategoryLevel').querySelector('option[value="meal"]'))$('pieCategoryLevel').add(new Option('食事区分（朝食・昼食・夕食）','meal'));
+  const mealOption=$('pieCategoryLevel').querySelector('option[value="meal"]');
+  if(mealOption)mealOption.textContent='用途区分（朝食・昼食・夕食・職場）';
+  if(!$('pieCategoryLevel').querySelector('option[value="meal"]'))$('pieCategoryLevel').add(new Option('用途区分（朝食・昼食・夕食・職場）','meal'));
   try{
     if(localStorage.getItem(DASHBOARD_CHART_KEY)==='pie')dashboardChartView='pie';
     const level=localStorage.getItem(DASHBOARD_PIE_LEVEL_KEY);
@@ -252,8 +255,8 @@ function renderCategoryPie(rows,month,mode){
   const level=$('pieCategoryLevel').value;
   const mealChart=level==='meal';
   if(!mealChart)selectedMealDetail=null;
-  const mealTotals=[0,0,0];
-  if(mealChart)rows.filter(r=>FOOD_MAJORS.includes(r.item.category)).forEach(r=>mealPortionCents(r.item,r.amount).forEach((amount,i)=>mealTotals[i]+=amount));
+  const mealTotals=MEAL_TYPES.map(()=>0);
+  if(mealChart)rows.filter(r=>mealRelevant(r.item)).forEach(r=>mealPortionCents(r.item,r.amount).forEach((amount,i)=>mealTotals[i]+=amount));
   const entries=mealChart?MEAL_TYPES.map(([,label],i)=>[label,mealTotals[i]]).filter(([,amount])=>amount>0):pieDataForRows(rows,level);
   const total=entries.reduce((sum,[,value])=>sum+value,0);
   if(total===0){$('categoryPieContent').innerHTML='<div class="empty">円グラフに表示する支出がありません。</div>';return}
@@ -275,7 +278,7 @@ function renderCategoryPie(rows,month,mode){
   const mealDetail=mealChart&&selectedMealDetail?(()=>{
     const mealIndex=MEAL_TYPES.findIndex(([,name])=>name===selectedMealDetail);
     if(mealIndex<0)return '';
-    const itemRows=rows.filter(r=>FOOD_MAJORS.includes(r.item.category)).map(r=>({...r,mealAmount:mealPortionCents(r.item,r.amount)[mealIndex]})).filter(r=>r.mealAmount>0).sort((a,b)=>b.mealAmount-a.mealAmount);
+    const itemRows=rows.filter(r=>mealRelevant(r.item)).map(r=>({...r,mealAmount:mealPortionCents(r.item,r.amount)[mealIndex]})).filter(r=>r.mealAmount>0).sort((a,b)=>b.mealAmount-a.mealAmount);
     const detailTotal=itemRows.reduce((sum,r)=>sum+r.mealAmount,0);
     return `<section class="meal-pie-details"><div class="meal-pie-detail-head"><h4>${esc(selectedMealDetail)}の商品内訳（${itemRows.length}明細・${yen(centsAmount(detailTotal))}）</h4><button type="button" class="secondary" id="closeMealDetail">内訳を閉じる</button></div>${itemRows.map(r=>`<div class="allocated-line"><div><strong>${esc(r.item.name)}</strong><small>${esc(r.purchase.merchant||'購入先不明')} · ${esc(r.purchase.date||'')} · ${esc(r.item.category||'その他')} ＞ ${esc(r.item.subcategory||'未分類')}</small></div><strong>${yen(centsAmount(r.mealAmount))}</strong></div>`).join('')||'<div class="empty">この区分の商品はありません。</div>'}</section>`;
   })():'';
@@ -306,11 +309,11 @@ function renderDashboard(){
   let mealPanel=$('mealSummary');
   if(!mealPanel){mealPanel=document.createElement('article');mealPanel.id='mealSummary';mealPanel.className='meal-summary';
     $('monthlyTotal').closest('article').parentElement.after(mealPanel);}
-  const mealTotals=[0,0,0];
-  rows.filter(r=>['食材','調味料','食品・飲料'].includes(r.item.category)).forEach(r=>{
+  const mealTotals=MEAL_TYPES.map(()=>0);
+  rows.filter(r=>mealRelevant(r.item)).forEach(r=>{
     mealPortionCents(r.item,r.amount).forEach((amount,i)=>mealTotals[i]+=amount);
   });
-  mealPanel.innerHTML='<h3>食事区分別の食費</h3><p class="muted">食材・調味料・食品・飲料のみ。未設定の商品は夕食用に集計します。</p><div class="meal-summary-grid">'+
+  mealPanel.innerHTML='<h3>用途区分別の食費</h3><p class="muted">食材・調味料・食品・飲料・外食・職場用の飲食を集計。未設定の商品は夕食用に集計します。</p><div class="meal-summary-grid">'+
     MEAL_TYPES.map(([,name],i)=>`<div><small>${name}</small><strong>${yen(centsAmount(mealTotals[i]))}</strong></div>`).join('')+'</div>';
   $('accountingExplanation').textContent=mode==='accounted'?
     '「計上月」で集計中。購入日が前月でも、その月分として配分した金額だけを含みます。':
@@ -352,3 +355,12 @@ function csvCell(v){return '"'+String(v??'').replaceAll('"','""')+'"'}
 function handleImages(files){pendingImages.push(...Array.from(files));if(window.receiptQueueChanged)window.receiptQueueChanged();else $('imageQueue').textContent=pendingImages.length+'枚選択しました。'}
 function init(){installDatePickerWholeField();chartPrefsRead();$('foodScope').onchange=()=>{foodDrillSub=null;renderDashboard()};$('foodBack').onclick=()=>{foodDrillSub=null;renderDashboard()};$('chartBarButton').onclick=()=>setChartView('bar');$('chartPieButton').onclick=()=>setChartView('pie');$('pieCategoryLevel').onchange=()=>{try{localStorage.setItem(DASHBOARD_PIE_LEVEL_KEY,$('pieCategoryLevel').value)}catch{}renderDashboard()};if('serviceWorker'in navigator&&location.protocol!=='file:')navigator.serviceWorker.register('./sw.js').catch(()=>{});$('month').value=today().slice(0,7);$('purchaseDate').value=today();addRow();refresh();document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{document.querySelectorAll('nav button').forEach(x=>x.classList.toggle('active',x===b));document.querySelectorAll('.tab').forEach(x=>x.classList.toggle('active',x.id===b.dataset.tab));refresh()});$('book').onchange=e=>{if(window.cloudMode){e.target.value=state.activeBook;return;}state.activeBook=e.target.value;persist();refresh()};$('addBook').onclick=()=>{if(window.cloudMode)return toast('共有家計簿の作成は今後対応します');const name=prompt('新しい家計簿名（この端末内での切り替え）');if(!name?.trim())return;const id=uid();state.books.push({id,name:name.trim(),kind:'shared'});state.activeBook=id;persist();refresh()};$('month').onchange=renderDashboard;$('accountingMode').onchange=renderDashboard;$('purchaseDate').addEventListener('change',()=>{document.querySelectorAll('.item-row .account-month').forEach(el=>{if(el.dataset.changed!=='yes')el.value=$('purchaseDate').value.slice(0,7)})});document.addEventListener('change',e=>{if(e.target?.matches('.item-row .account-month'))e.target.dataset.changed='yes'});$('addItem').onclick=()=>addRow();$('savePurchase').onclick=savePurchase;$('historySearch').oninput=renderHistory;$('historyMode').onchange=renderHistory;['compareSearch','period','fromDate','toDate','originFilter','stateFilter'].forEach(id=>$(id).addEventListener('input',()=>{const custom=$('period').value==='custom';$('fromDate').hidden=!custom;$('toDate').hidden=!custom;renderCompare()}));$('camera').onchange=e=>handleImages(e.target.files);$('images').onchange=e=>handleImages(e.target.files);$('exportJson').onclick=()=>download('receipt-backup-'+today()+'.json',JSON.stringify({...state,learnedRules:window.learningExportRules?.()||state.learnedRules||[]},null,2),'application/json');$('exportCsv').onclick=()=>{const cols=['家計簿','購入日','店舗','商品名','統一商品名','商品全額','計上月','月別計上金額','月別配分数量','数量単位','購入数量','容量','大分類','小分類','産地','状態'];const lines=[cols,...state.purchases.flatMap(p=>p.items.flatMap(i=>accountingAllocations(p,i).map(a=>[state.books.find(b=>b.id===p.bookId)?.name,p.date,p.merchant,i.name,i.canonical,i.amount,a.month,a.amount,a.quantity,i.unit,i.qty,i.size,i.category,i.subcategory,i.origin,i.state])))];download('receipt-allocations-'+today()+'.csv','\ufeff'+lines.map(r=>r.map(csvCell).join(',')).join('\r\n'),'text/csv;charset=utf-8')};$('importJson').onchange=async e=>{if(window.cloudMode){toast('ログアウト後に端末内バックアップを復元してください');e.target.value='';return;}const file=e.target.files?.[0];if(!file)return;try{const incoming=JSON.parse(await file.text());if(incoming.schemaVersion!==1||!Array.isArray(incoming.books)||!Array.isArray(incoming.purchases)||!incoming.books.every(b=>typeof b.id==='string')||!incoming.purchases.every(p=>Array.isArray(p.items)))throw Error('対応していないバックアップ形式です');if(!confirm('現在の端末内データをバックアップ内容で置き換えます。続行しますか？'))return;state=incoming;state.learnedRules||=[];persist();refresh();window.learningOnSignOut?.();toast('バックアップを復元しました')}catch(err){toast(err.message)}finally{e.target.value=''}};$('addAlias').onclick=()=>{const k=$('aliasRaw').value.trim(),v=$('aliasCanonical').value.trim();if(!k||!v)return toast('両方の商品名を入力してください');state.aliases[k]=v;persist();$('aliasRaw').value='';$('aliasCanonical').value='';renderAliases();toast('統一ルールを追加しました（既存履歴は変更しません）')}}
 init();
+// Keep the selected dashboard month when reloading the app; do not alter purchase/accounting months.
+const DASHBOARD_MONTH_KEY='receipt-ledger-selected-dashboard-month';
+try{
+  const savedMonth=localStorage.getItem(DASHBOARD_MONTH_KEY);
+  if(monthIsValid(savedMonth)){$('month').value=savedMonth;renderDashboard();}
+}catch{}
+$('month').addEventListener('change',()=>{
+  try{if(monthIsValid($('month').value))localStorage.setItem(DASHBOARD_MONTH_KEY,$('month').value);}catch{}
+});
