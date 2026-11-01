@@ -260,6 +260,19 @@ function editSplitAllocationPlans(plans,targetCents){
     plans.map((a,i)=>({...a,amount:centsAmount(base[i]-left[i]),quantity:a.quantity==null?null:a.quantity/2}))];
 }
 
+function editMealAutoSync(row){
+  const price=Math.max(0,amountCents(row.querySelector('.e-amount').value));
+  const current=MEAL_TYPES.map(([key])=>Math.max(0,amountCents(row.querySelector('.meal-'+key)?.value||0)));
+  const sum=current.reduce((a,b)=>a+b,0);
+  // Keep a single selected destination, including the default dinner destination.
+  const selected=current.findIndex(v=>v>0&&current.filter(n=>n>0).length===1);
+  let next;
+  if(sum===0)next=MEAL_TYPES.map(([key])=>key==='dinner'?price:0);
+  else if(selected>=0)next=MEAL_TYPES.map((_,i)=>i===selected?price:0);
+  else next=distributeCents(price,current);
+  MEAL_TYPES.forEach(([key],i)=>{const input=row.querySelector('.meal-'+key);if(input)input.value=String(centsAmount(next[i]));});
+  editMealRead(row,false);
+}
 function editMealRead(row,strict=true){
   const amounts={};let total=0;
   for(const [key] of MEAL_TYPES){
@@ -316,7 +329,7 @@ function editMealPanel(row,item){
     row.querySelector('.meal-dinner').value=String(centsAmount(Math.max(0,amount-morning-lunch-work)));
     editMealRead(row,false);controls.updateSelection();
   });
-  row.querySelector('.e-amount').addEventListener('input',()=>editMealRead(row,false));
+  row.querySelector('.e-amount').addEventListener('input',()=>{editMealAutoSync(row);controls.updateSelection();});
   editMealRead(row,false);controls.updateSelection();
 }
 function editNewRow(item={}){
@@ -458,6 +471,7 @@ function editNewRow(item={}){
     if(planList.children.length===1&&wrap.dataset.autoSingleAmount==='yes'){
       planList.firstElementChild.querySelector('.a-amount').value=wrap.querySelector('.e-amount').value;
     }
+    editMealAutoSync(wrap);
     editTotals();
   });
   wrap.querySelector('.edit-remove').addEventListener('click',()=>{

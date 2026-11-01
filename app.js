@@ -108,13 +108,16 @@ const DASHBOARD_CHART_KEY='receipt-ledger-chart-view-v07';
 const DASHBOARD_PIE_LEVEL_KEY='receipt-ledger-pie-level-v07';
 let dashboardChartView='bar';
 const FOOD_MAJORS=['食材','調味料','食品・飲料','外食'];
+const COMBINED_PIE_KEY='receipt-ledger-combined-pie-majors-v35';
 let combinedPieMajors=new Set(FOOD_MAJORS);
+function rememberPieMajors(){try{localStorage.setItem(COMBINED_PIE_KEY,JSON.stringify([...combinedPieMajors]));}catch{}}
 let foodDrillSub=null;
 let selectedMealDetail=null;
 let foodSlices=[];
 const DASHBOARD_PIE_COLORS=['#23836c','#db8e40','#6188bd','#b96f92','#8375b5','#6c9b42','#d26e5e','#4f91a2','#b2a03c','#956c56','#537e5a','#a36da4'];
 function categoryColor(index){return DASHBOARD_PIE_COLORS[index%DASHBOARD_PIE_COLORS.length]}
 function chartPrefsRead(){
+  try{const saved=JSON.parse(localStorage.getItem(COMBINED_PIE_KEY));if(Array.isArray(saved))combinedPieMajors=new Set(saved.filter(x=>Object.hasOwn(GROUPS,x)));}catch{}
   initCombinedPieChoices();
   const mealOption=$('pieCategoryLevel').querySelector('option[value="meal"]');
   if(mealOption)mealOption.textContent='用途区分（朝食・昼食・夕食・職場）';
@@ -144,7 +147,7 @@ function setChartView(view){
 function showFoodMajor(major){
   if(!FOOD_MAJORS.includes(major))return;
   combinedPieMajors=new Set([major]);
-  syncCombinedPieChoices();
+  syncCombinedPieChoices();rememberPieMajors();
   foodDrillSub=null;
   renderDashboard();
   $('foodBreakdownCard').scrollIntoView({behavior:'smooth',block:'start'});
@@ -172,11 +175,11 @@ function initCombinedPieChoices(){
   card.querySelector('.food-highlight').before(control);
   control.querySelectorAll('input[data-subject]').forEach(input=>input.addEventListener('change',()=>{
     if(input.checked)combinedPieMajors.add(input.dataset.subject);else combinedPieMajors.delete(input.dataset.subject);
-    foodDrillSub=null;syncCombinedPieChoices();renderDashboard();
+    foodDrillSub=null;syncCombinedPieChoices();rememberPieMajors();renderDashboard();
   }));
   control.querySelectorAll('[data-subject-preset]').forEach(button=>button.addEventListener('click',()=>{
     combinedPieMajors=new Set(button.dataset.subjectPreset==='food'?FOOD_MAJORS:Object.keys(GROUPS));
-    foodDrillSub=null;syncCombinedPieChoices();renderDashboard();
+    foodDrillSub=null;syncCombinedPieChoices();rememberPieMajors();renderDashboard();
   }));
   card.querySelector('.food-help').textContent='選んだ大分類を1つの円グラフにまとめます。初期設定は食材・調味料・食品／飲料・外食の食費全体。分類を押すと商品の内訳を確認できます。';
   card.querySelector('.chart-section-title h3').textContent='食費全体・選択科目の内訳';
