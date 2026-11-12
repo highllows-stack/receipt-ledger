@@ -326,7 +326,8 @@ function editMealPanel(row,item){
     const morning=amountCents(row.querySelector('.meal-breakfast').value);
     const lunch=amountCents(row.querySelector('.meal-lunch').value);
     const work=amountCents(row.querySelector('.meal-work').value);
-    row.querySelector('.meal-dinner').value=String(centsAmount(Math.max(0,amount-morning-lunch-work)));
+    const nonfood=amountCents(row.querySelector('.meal-nonfood').value);
+    row.querySelector('.meal-dinner').value=String(centsAmount(Math.max(0,amount-morning-lunch-work-nonfood)));
     editMealRead(row,false);controls.updateSelection();
   });
   row.querySelector('.e-amount').addEventListener('input',()=>{editMealAutoSync(row);controls.updateSelection();});
@@ -544,7 +545,8 @@ function editCategoryRender(){
       const morning=amountCents(card.querySelector('.category-meal-breakfast').value);
       const lunch=amountCents(card.querySelector('.category-meal-lunch').value);
       const work=amountCents(card.querySelector('.category-meal-work').value);
-      card.querySelector('.category-meal-dinner').value=String(centsAmount(Math.max(0,amountCents(amount)-morning-lunch-work)));
+      const nonfood=amountCents(card.querySelector('.category-meal-nonfood').value);
+      card.querySelector('.category-meal-dinner').value=String(centsAmount(Math.max(0,amountCents(amount)-morning-lunch-work-nonfood)));
       syncMeal();controls.updateSelection();
     });
     syncMeal();controls.updateSelection();
