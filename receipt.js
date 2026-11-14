@@ -16,7 +16,7 @@ function queueSummary(){
     div.append(a,b);root.append(div);
   }
 }
-window.receiptQueueChanged=()=>{queueSummary();receiptStatus(pendingImages.length+'枚選択しました。順番に処理します。');};
+window.receiptQueueChanged=()=>{queueSummary();receiptStatus(pendingImages.length+'枚選択しました。登録方法を選んでください。');};
 async function extractImage(file){
   if(!file||!file.type.startsWith('image/'))throw Error('写真の画像ファイルを指定してください');
   const url=URL.createObjectURL(file),img=new Image();
@@ -39,6 +39,72 @@ async function extractImage(file){
     }
     throw Error('写真が大きすぎます。画質を下げてからお試しください');
   }finally{URL.revokeObjectURL(url);}
+}
+// Several photographs of one physical receipt: OCR each photo separately but save
+// one purchase and one stitched private evidence photo (no schema migration).
+async function receiptComposePhotos(images){
+  const decoded=[];
+  try{
+    for(const image of images){
+      const url=URL.createObjectURL(new Blob([Uint8Array.from(atob(image.imageBase64),c=>c.charCodeAt(0))],{type:'image/jpeg'}));
+      const img=new Image();img.src=url;await img.decode();decoded.push({img,url});
+    }
+    const gutter=24;
+    let factor=Math.min(1,2000/Math.max(...decoded.map(x=>x.img.naturalWidth)));
+    for(let attempt=0;attempt<9;attempt++){
+      const heights=decoded.map(x=>Math.max(1,Math.round(x.img.naturalHeight*factor)));
+      const width=Math.max(...decoded.map(x=>Math.round(x.img.naturalWidth*factor)));
+      const height=heights.reduce((a,b)=>a+b,0)+gutter*(heights.length-1);
+      if(width*height>25000000||height>16000){factor*=.82;continue;}
+      const canvas=document.createElement('canvas');canvas.width=width;canvas.height=height;
+      const ctx=canvas.getContext('2d',{alpha:false});if(!ctx)throw Error('写真の結合に失敗しました');
+      ctx.fillStyle='#ffffff';ctx.fillRect(0,0,width,height);
+      let top=0;
+      decoded.forEach(({img},i)=>{const w=Math.round(img.naturalWidth*factor);ctx.drawImage(img,Math.floor((width-w)/2),top,w,heights[i]);top+=heights[i]+gutter;});
+      for(const quality of [.88,.78,.68]){
+        const data=canvas.toDataURL('image/jpeg',quality).split(',')[1];
+        if(data&&data.length<=6400000)return{imageBase64:data,mimeType:'image/jpeg',width,height};
+      }
+      factor*=.82;
+    }
+    throw Error('結合画像が大きすぎます。枚数を減らして再登録してください（登録は行われていません）。');
+  }finally{decoded.forEach(({url})=>URL.revokeObjectURL(url));}
+}
+async function scanCombined(files){
+  if(files.length<2)throw Error('結合する画像を2枚以上選択してください');
+  if(files.length>6)throw Error('1件に結合できる画像は6枚までです');
+  const images=[],results=[];
+  for(let j=0;j<files.length;j++){
+    receiptStates.set(files[j],`OCR読み取り中（${j+1}/${files.length}）`);queueSummary();
+    const image=await extractImage(files[j]);images.push(image);
+    const result=await sbApi('/functions/v1/receipt-ocr',{method:'POST',data:image});
+    results.push(result);
+  }
+  // Parse every page independently as well as in sequence. A split total or
+  // discount can cross a page boundary; reconciliation must remain reviewable.
+  const text=results.map((r,i)=>`【画像${i+1}】\n${r.text||''}`).join('\n');
+  const parsed=ocrExtractReceipt(results.map(r=>r.text||'').join('\n'));
+  const pageParsed=results.map(r=>ocrExtractReceipt(r.text||'',r.layoutLines||[]));
+  const combined=parsed.items.length>=pageParsed.reduce((n,p)=>n+p.items.length,0)?parsed.items:pageParsed.flatMap(p=>p.items);
+  if(!combined.length)throw Error('商品を認識できませんでした。写真を撮り直してください');
+  const fingerprint=await receiptFingerprint(text);
+  if(state.purchases.some(p=>p.receiptFingerprint===fingerprint))return{status:'duplicate',parsed};
+  const items=combined.map(({name,amount,qty,unit})=>{
+    const [category,subcategory]=guessCategory(name);
+    const base={id:uid(),name,canonical:normalize(name),amount,qty:qty||1,size:null,unit:unit||'個',category,subcategory,origin:'',state:''};
+    return window.learningApplyOCRItem?.(base)||base;
+  });
+  const composite=await receiptComposePhotos(images);
+  // Never auto-certify multiple-page OCR: cropped overlapping portions can
+  // duplicate item lines, and a subtotal on one page may be misidentified.
+  const p={id:uid(),bookId:sbLedger,date:pageParsed.find(x=>x.date)?.date||parsed.date||today(),
+    merchant:pageParsed.find(x=>x.merchant)?.merchant||parsed.merchant,source:'receipt',items,
+    receiptTotal:parsed.total??null,receiptFingerprint:fingerprint,
+    reviewStatus:'needs_review',receiptOcrText:ocrEvidenceStore(text,[])};
+  const meta=await window.sbUploadReceiptImage(p.id,composite.imageBase64);
+  Object.assign(p,meta);
+  try{await sbInsert(p);}catch(e){await window.sbRemoveReceiptImage(meta.receiptImagePath).catch(()=>{});throw e;}
+  return{status:'review',parsed:{...parsed,items:combined},purchaseId:p.id};
 }
 async function receiptFingerprint(text){
   const bytes=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(String(text).normalize('NFKC').replace(/[\s\u3000]+/g,'').toLowerCase()));
@@ -82,6 +148,23 @@ async function receiptScanAll(){
   if(!window.cloudMode||!sbSession?.access_token)return receiptStatus('先に「設定」でログインしてください');
   if(!pendingImages.length)return receiptStatus('レシート画像を選択してください');
   receiptRunning=true;sbBusy=true;receiptEl('ocrStart').disabled=true;receiptEl('ocrClear').disabled=true;
+  const combinedMode=receiptEl('receiptGroupMode')?.value==='one'&&pendingImages.length>1;
+  if(combinedMode){
+    try{
+      receiptStatus('選択した画像を1件としてOCR解析しています…');
+      const result=await scanCombined(pendingImages);
+      if(result.status==='duplicate'){receiptStatus('この一連の画像は既に登録されています。');}
+      else{
+        pendingImages.forEach(file=>receiptStates.set(file,'1件の要確認レシートとして登録済み'));
+        sbBusy=false;await sbLoad();
+        receiptStatus('画像'+pendingImages.length+'枚を1件の購入履歴として登録しました。重複した商品や合計金額を写真と照合してください。');
+        window.openPurchaseEditor?.(result.purchaseId);
+      }
+    }catch(e){receiptStatus('結合登録に失敗（保存は未完了）：'+e.message);}
+    finally{receiptRunning=false;sbBusy=false;receiptEl('ocrStart').disabled=false;receiptEl('ocrClear').disabled=false;queueSummary();}
+    return;
+  }
+
   let success=0,review=0,failed=0,duplicate=0,lastReview=null;
   try{
     for(const file of pendingImages){
@@ -389,6 +472,25 @@ function receiptRevokePreview(){if(receiptPhotoRotatedUrl){URL.revokeObjectURL(r
 function receiptUpdateRotationButton(){
   receiptEl('editPhotoSaveRotation').disabled=!receiptPhotoRotation||receiptPhotoBusy||!currentEditPurchase?.receiptImagePath;
 }
+let receiptDrag=null;
+function receiptInitDrag(){
+  const area=receiptEl('editReceiptPhotoArea');
+  if(!area)return;
+  area.addEventListener('pointerdown',e=>{
+    if(e.button!==0||!receiptEl('editReceiptImage')?.naturalWidth)return;
+    if(area.scrollWidth<=area.clientWidth+1&&area.scrollHeight<=area.clientHeight+1)return;
+    receiptDrag={id:e.pointerId,x:e.clientX,y:e.clientY,left:area.scrollLeft,top:area.scrollTop};
+    area.setPointerCapture(e.pointerId);area.classList.add('dragging');e.preventDefault();
+  });
+  area.addEventListener('pointermove',e=>{
+    if(!receiptDrag||receiptDrag.id!==e.pointerId)return;
+    area.scrollLeft=receiptDrag.left-(e.clientX-receiptDrag.x);
+    area.scrollTop=receiptDrag.top-(e.clientY-receiptDrag.y);
+    e.preventDefault();
+  });
+  const stop=e=>{if(receiptDrag&&receiptDrag.id===e.pointerId){receiptDrag=null;area.classList.remove('dragging');}};
+  area.addEventListener('pointerup',stop);area.addEventListener('pointercancel',stop);area.addEventListener('lostpointercapture',stop);
+}
 function receiptApplyVisualRotation(){
   const img=receiptEl('editReceiptImage'),area=receiptEl('editReceiptPhotoArea'),frame=receiptEl('editReceiptImageFrame');
   if(!img||!frame||!area||!img.naturalWidth||!img.naturalHeight||img.hidden)return;
@@ -558,6 +660,7 @@ async function receiptAttachFromEditor(file){
   }catch(e){receiptEl('editPhotoStatus').textContent='保存失敗：'+e.message;}
 }
 function receiptInit(){
+  receiptInitDrag();
   receiptEl('ocrStart').onclick=()=>receiptScanAll().catch(e=>receiptStatus('エラー：'+e.message));
   receiptEl('ocrClear').onclick=()=>{if(receiptRunning)return;pendingImages=[];receiptEl('camera').value='';receiptEl('images').value='';queueSummary();receiptStatus('選択を解除しました');};
   receiptEl('editPhotoAttach').onchange=e=>receiptAttachFromEditor(e.target.files?.[0]);

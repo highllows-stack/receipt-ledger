@@ -262,3 +262,10 @@ button.chart-mode-button.selected{background:#1d6c54;color:#fff;box-shadow:0 1px
 .meal-summary-grid>div{display:flex;flex-direction:column;gap:4px;padding:12px;background:#f4faf7;border-radius:10px}
 .meal-summary-grid strong{font-size:18px;overflow-wrap:anywhere}
 @media(max-width:520px){.meal-allocation-inputs{grid-template-columns:repeat(2,minmax(0,1fr));gap:7px}.meal-summary-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:7px}.meal-summary-grid>div{padding:8px}.meal-summary-grid strong{font-size:14px}}
+
+/* v3.7: direct pan on zoomed photos, mouse/touch/stylus. */
+.receipt-photo-area{cursor:grab;touch-action:none;user-select:none;}
+.receipt-photo-area.dragging{cursor:grabbing;}
+.receipt-photo-area img{pointer-events:none;user-select:none;-webkit-user-drag:none;}
+.receipt-group-option{display:block;margin:10px 0;font-weight:600;}
+.receipt-group-option select{display:block;width:100%;margin-top:6px;}
